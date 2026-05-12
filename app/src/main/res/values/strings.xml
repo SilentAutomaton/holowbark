@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Holowbark</string>
+    <string name="notif_channel_name">VPN Status</string>
+    <string name="notif_channel_desc">Yggdrasil + AmneziaWG tunnel status</string>
+</resources>

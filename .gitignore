@@ -1,0 +1,13 @@
+.gradle/
+build/
+app/build/
+app/libs/*.aar
+app/libs/*.jar
+local.properties
+*.iml
+.kotlin/
+.idea/
+*.keystore
+*.jks
+entities.json
+.claude/settings.local.json
