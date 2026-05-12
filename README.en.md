@@ -8,6 +8,15 @@ Android VPN app combining the [Yggdrasil](https://yggdrasil-network.github.io/) 
 
 Pre-built APKs are available in [Releases](https://github.com/SilentAutomaton/holowbark/releases).
 
+## Quick start
+
+1. Install the APK from the Releases page.
+2. On the **WG** tab, import your WireGuard `.conf` file (see the Server setup section below).
+3. On the **Peers** tab, select the country closest to your server and add at least 10 peers — the more you add, the more resilient the overlay.
+4. Go back to the home screen and tap **Connect**.
+
+Holowbark first establishes the Yggdrasil overlay through the selected peers, then routes all traffic through the WireGuard tunnel on top of it.
+
 ## Build
 
 ### Requirements
@@ -20,7 +29,7 @@ Pre-built APKs are available in [Releases](https://github.com/SilentAutomaton/ho
 | Android NDK | r27 (`ndk;27.2.12479018`) |
 | Java | 17+ |
 
-### Quick start
+### Build and install
 
 ```bash
 make setup   # first-time setup: SDK components, gomobile, Go repo clones
