@@ -2,7 +2,7 @@
 
 [Русский](README.md)
 
-Android VPN app combining the [Yggdrasil](https://yggdrasil-network.github.io/) overlay network and [WireGuard](https://www.wireguard.com/) in a single userspace `VpnService`. No root required.
+Android app for connecting to [WireGuard](https://www.wireguard.com/) VPN through the [Yggdrasil](https://yggdrasil-network.github.io/) overlay network. No root required.
 
 > **Always-On VPN**: the app does not work correctly in this mode. Make sure it is disabled: Settings → Network → VPN → Holowbark → ⚙.
 
@@ -10,12 +10,9 @@ Pre-built APKs are available in [Releases](https://github.com/SilentAutomaton/ho
 
 ## Quick start
 
-1. Install the APK from the Releases page.
-2. On the **WG** tab, import your WireGuard `.conf` file (see the Server setup section below).
-3. On the **Peers** tab, select the country closest to your server and add at least 10 peers — the more you add, the more resilient the overlay.
-4. Go back to the home screen and tap **Connect**.
-
-Holowbark first establishes the Yggdrasil overlay through the selected peers, then routes all traffic through the WireGuard tunnel on top of it.
+1. On the **WG** tab, import your WireGuard `.conf` file. If you don't have a server yet — set one up using the instructions below.
+2. On the **Peers** tab, select the country closest to your device and add at least 10 peers — the more you add, the more resilient the overlay.
+3. Go back to the home screen and tap **Connect**.
 
 ## Build
 
@@ -56,19 +53,21 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ### Go library (`holowbark.aar`)
 
-The AAR bundles Yggdrasil and AmneziaWG (WireGuard works; AmneziaWG obfuscation parameters are supported but untested) and is **not stored** in the repository — build it once with `make aar`. The gomobile entry point is `contrib/awgmobile/awgmobile.go`; `make clone-deps` copies it into the yggdrasil-go tree and adds the required Go dependencies.
+The AAR bundles Yggdrasil and AmneziaWG and is **not stored** in the repository — build it once with `make aar`. The gomobile entry point is `contrib/awgmobile/awgmobile.go`; `make clone-deps` copies it into the yggdrasil-go tree and adds the required Go dependencies.
+
+> AmneziaWG obfuscation parameters are supported but untested.
 
 ## Features
 
-- Import `.conf` file (WireGuard; AmneziaWG obfuscation parameters supported but untested)
-- Browse public Yggdrasil peers by country, select and connect
-- Access to Yggdrasil network resources including public DNS
+- WireGuard tunneling over the Yggdrasil overlay — traffic travels through the mesh network, bypassing the open internet
+- Built-in browser for public Yggdrasil peers, filterable by country
+- Optional Yggdrasil network DNS servers: support for `.ygg` domains and ad blocking
 
 ---
 
 ## Server setup — manual
 
-WireGuard exit node reachable **only through the Yggdrasil overlay**. The WireGuard UDP port is closed from the public internet — the server's Yggdrasil address is the sole endpoint.
+A WireGuard server reachable **only through the Yggdrasil overlay**. The UDP port is closed from the public internet — the server's Yggdrasil address is the sole endpoint.
 
 ### 1. Yggdrasil
 
@@ -84,7 +83,7 @@ yggdrasil -genconf > /etc/yggdrasil/yggdrasil.conf
 systemctl enable --now yggdrasil
 ```
 
-Add public peers to the `Peers` array in `/etc/yggdrasil/yggdrasil.conf` (list: [publicpeers.neilalexander.dev](https://publicpeers.neilalexander.dev/)). Get the server's overlay address:
+Add public peers to the `Peers` array in `/etc/yggdrasil/yggdrasil.conf` — list at [publicpeers.neilalexander.dev](https://publicpeers.neilalexander.dev/). Get the server's overlay address:
 
 ```bash
 yggdrasilctl getSelf | grep '"address"'
@@ -136,16 +135,6 @@ AllowedIPs = 10.100.0.2/32
 systemctl enable --now wg-quick@wg0
 ```
 
-Verify firewall from an external machine:
-
-```bash
-# should be silently dropped
-nc -u -z -w2 <server-public-ipv4> 51820; echo $?
-
-# should be reachable from inside Yggdrasil
-nc -u -z -w2 200:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx 51820; echo $?
-```
-
 ### 3. Client `.conf` for Holowbark
 
 ```ini
@@ -161,7 +150,7 @@ AllowedIPs          = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 ```
 
-Set `Endpoint` to the server's Yggdrasil address from step 1. Import via the WG tab in the app.
+Set `Endpoint` to the server's Yggdrasil address from step 1. Import the file via the WG tab in the app.
 
 ---
 
@@ -175,7 +164,7 @@ Follow the [official installation guide](https://wg-easy.github.io/wg-easy/lates
 WG_HOST=[200:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx]
 ```
 
-All generated client configs will automatically use the correct `Endpoint`. Download the `.conf` and import it into Holowbark via the WG tab.
+All client configs created through the interface will automatically contain the correct `Endpoint`. Download the `.conf` and import it into Holowbark via the WG tab.
 
 After initial setup, lock down the ports from the public internet:
 
@@ -204,7 +193,7 @@ ssh -L 51821:localhost:51821 user@<server>
 
 | Destination | Path |
 |---|---|
-| `200::/7` (Yggdrasil overlay) | YggdrasilManager → overlay |
-| Everything else | AwgManager → WireGuard tunnel |
+| `200::/7` (Yggdrasil overlay) | directly through Yggdrasil |
+| Everything else | through the WireGuard tunnel |
 
-Yggdrasil peer IPs (resolved at VPN start) are excluded from tunnel routes and reach the physical network directly. WireGuard uses `chanBind` — no real UDP socket is opened; outbound packets are wrapped in IPv6/UDP frames and forwarded through Yggdrasil, inbound frames are unwrapped and injected back into the stack.
+Yggdrasil peer IPs are resolved at VPN start and excluded from tunnel routes — traffic to them goes directly to the physical network.
