@@ -6,6 +6,8 @@ Android-приложение для подключения к Wireguard VPN че
 
 > **Always-On VPN**: в этом режиме приложение не работает из-за особенностей реализации. Убедитесь, что он отключён.
 
+Готовые APK — в разделе [Releases](https://github.com/SilentAutomaton/holowbark/releases).
+
 ## Сборка
 
 ### Зависимости

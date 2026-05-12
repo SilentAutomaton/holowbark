@@ -6,6 +6,8 @@ Android VPN app combining the [Yggdrasil](https://yggdrasil-network.github.io/) 
 
 > **Always-On VPN**: the app does not work correctly in this mode. Make sure it is disabled: Settings → Network → VPN → Holowbark → ⚙.
 
+Pre-built APKs are available in [Releases](https://github.com/SilentAutomaton/holowbark/releases).
+
 ## Build
 
 ### Requirements
