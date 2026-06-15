@@ -1,6 +1,5 @@
 package net.yggawg.mobile.vpn
 
-import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 
@@ -115,38 +114,3 @@ private fun routeContains(route: Route, ip: InetAddress): Boolean {
 
 private fun maxPrefix(ip: InetAddress) = if (ip is Inet6Address) 128 else 32
 
-// ─── Parsing helpers ──────────────────────────────────────────────────────────
-
-/**
- * Parse AWG AllowedIPs string (comma-separated CIDRs) into [Route] list.
- * Skips invalid entries silently.
- */
-fun parseAllowedIPs(allowedIPs: String): List<Route> =
-    allowedIPs.split(",").mapNotNull { it.trim().parseCidr() }
-
-/** Parse "a.b.c.d/prefix" or "ipv6/prefix" into [Route], or null on failure. */
-private fun String.parseCidr(): Route? {
-    val slash = lastIndexOf('/')
-    if (slash < 0) return null
-    val ip     = runCatching { InetAddress.getByName(substring(0, slash)) }.getOrNull() ?: return null
-    val prefix = substring(slash + 1).toIntOrNull() ?: return null
-    val max    = if (ip is Inet6Address) 128 else 32
-    if (prefix < 0 || prefix > max) return null
-    // Mask address to canonical network address
-    val masked = maskAddress(ip.address, prefix)
-    return Route(InetAddress.getByAddress(masked), prefix)
-}
-
-private fun maskAddress(bytes: ByteArray, prefix: Int): ByteArray {
-    val out = bytes.copyOf()
-    val fullBytes = prefix / 8
-    val remBits   = prefix % 8
-    if (remBits > 0 && fullBytes < out.size) {
-        val mask = (0xFF shl (8 - remBits)) and 0xFF
-        out[fullBytes] = (out[fullBytes].toInt() and mask).toByte()
-    }
-    for (i in fullBytes + (if (remBits > 0) 1 else 0) until out.size) {
-        out[i] = 0
-    }
-    return out
-}

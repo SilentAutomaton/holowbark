@@ -18,8 +18,6 @@ import kotlinx.serialization.Serializable
 )
 data class Peer(
     @PrimaryKey val address: String,
-    val host: String,
-    val port: String,
     val ip: String?,         // resolved IPv4/IPv6 address, null if unresolved
     val country: String,     // e.g. "europe/russia"
     val up: Boolean,

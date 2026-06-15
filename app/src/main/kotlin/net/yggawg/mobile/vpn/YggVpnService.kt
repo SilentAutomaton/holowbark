@@ -2,14 +2,22 @@ package net.yggawg.mobile.vpn
 
 import android.app.Notification
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.IpPrefix
 import android.net.LinkAddress
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -24,6 +32,7 @@ import net.yggawg.mobile.R
 import net.yggawg.mobile.HolowbarkApp
 import net.yggawg.mobile.config.AwgConfig
 import net.yggawg.mobile.config.parseAwgConf
+import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
@@ -67,6 +76,12 @@ class YggVpnService : VpnService() {
     private var savedAwgConfig: AwgConfig? = null
     private var savedAwgServerAddrBytes: ByteArray? = null
     private var savedAwgServerPort: Int = 44555
+
+    private var savedPeers: List<String> = emptyList()
+    private var netCallback: ConnectivityManager.NetworkCallback? = null
+    private var screenReceiver: BroadcastReceiver? = null
+    private var lastNotifText = ""
+    private var dnsProxyInstance: SplitDnsProxy? = null
 
     @Volatile private var status = TunnelStatus()
 
@@ -140,6 +155,46 @@ class YggVpnService : VpnService() {
         }
         yggMgr.start(peers, yggKey, multicast)
 
+        // Persist peer list so network-change callback can trigger retries
+        savedPeers = peers
+
+        // Reconnect Yggdrasil peers whenever the underlying physical network changes
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                AppLogger.i(TAG, "Physical network available — retrying Ygg peers")
+                ygg?.setPeers(savedPeers)
+            }
+            override fun onLost(network: Network) {
+                AppLogger.d(TAG, "Physical network lost")
+            }
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
+                AppLogger.d(TAG, "Link properties changed — retrying Ygg peers")
+                ygg?.setPeers(savedPeers)
+            }
+        }
+        cm.registerNetworkCallback(request, cb)
+        netCallback = cb
+
+        // Adaptive polling: slow down when screen is off to save battery
+        val sr = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_OFF -> ygg?.pollIntervalMs = 60_000L
+                    Intent.ACTION_SCREEN_ON  -> ygg?.pollIntervalMs = 30_000L
+                }
+            }
+        }
+        ContextCompat.registerReceiver(this, sr, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }, ContextCompat.RECEIVER_NOT_EXPORTED)
+        screenReceiver = sr
+
         // The overlay address is deterministic from the private key — available immediately
         // after startJSON(), no need to wait for peer connections.
         val yggAddress = yggMgr.getAddress().ifEmpty { "200::" }
@@ -160,6 +215,17 @@ class YggVpnService : VpnService() {
                                  "be unreachable: ${skipped.joinToString { it.hostAddress ?: "?" }}")
             }
             emptySet()
+        }
+
+        // Read system DNS before the VPN overwrites it (used as split-DNS upstream fallback)
+        val preVpnDns: InetAddress? = try {
+            val lp = getSystemService(ConnectivityManager::class.java)
+                ?.getLinkProperties(getSystemService(ConnectivityManager::class.java)?.activeNetwork)
+            lp?.dnsServers?.firstOrNull { it is Inet4Address }
+                ?: lp?.dnsServers?.firstOrNull()
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "pre-VPN DNS read failed: $e")
+            null
         }
 
         val builder = Builder()
@@ -219,37 +285,60 @@ class YggVpnService : VpnService() {
             }
         }
 
-        // AWG-provided DNS (private resolver behind the tunnel)
-        awgConfig?.dns?.split(",")
-            ?.map { it.trim() }
-            ?.filter { it.isNotEmpty() }
-            ?.forEach {
+        val awgDnsServers = awgConfig?.dns?.split(",")
+            ?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+
+        val yggDnsEnabled = getSharedPreferences("yggawg", android.content.Context.MODE_PRIVATE)
+            .getBoolean("ygg_dns_enabled", false)
+
+        if (yggDnsEnabled) {
+            // Split-DNS proxy: .ygg queries → Yggdrasil resolver, others → AWG DNS or pre-VPN DNS
+            val upstreamDns: InetAddress? = awgDnsServers.firstOrNull()
+                ?.let { runCatching { InetAddress.getByName(it) }.getOrNull() }
+                ?: preVpnDns
+            val yggResolver = runCatching {
+                InetAddress.getByName(YGG_DNS_SERVERS.first()) as Inet6Address
+            }.getOrNull()
+            if (yggResolver != null) {
+                dnsProxyInstance = SplitDnsProxy(
+                    upstreamDns    = upstreamDns,
+                    yggDnsResolver = yggResolver,
+                    yggMgr         = yggMgr,
+                    protect        = ::protect,
+                    writeToTun     = { router?.writeToTun(it) },
+                )
+                runCatching { builder.addDnsServer("198.18.0.53") }
+                    .onFailure { AppLogger.w(TAG, "addDnsServer proxy: $it") }
+                AppLogger.i(TAG, "Split DNS proxy enabled, upstream=$upstreamDns")
+            } else {
+                AppLogger.w(TAG, "Ygg DNS resolver unavailable — using AWG DNS only")
+                awgDnsServers.forEach { runCatching { builder.addDnsServer(it) }.onFailure {} }
+            }
+        } else {
+            awgDnsServers.forEach {
                 runCatching { builder.addDnsServer(it) }
                     .onFailure { AppLogger.w(TAG, "addDnsServer $it: $it") }
             }
-        // Yggdrasil community DNS resolvers — only added when enabled by the user.
-        // These are in 200::/7 and go through the Yggdrasil overlay automatically.
-        val yggDnsEnabled = getSharedPreferences("yggawg", android.content.Context.MODE_PRIVATE)
-            .getBoolean("ygg_dns_enabled", false)
-        if (yggDnsEnabled) {
-            YGG_DNS_SERVERS.forEach { dns ->
-                runCatching { builder.addDnsServer(dns) }
-                    .onFailure { AppLogger.w(TAG, "addDnsServer Ygg $dns: $it") }
-            }
-            AppLogger.i(TAG, "Yggdrasil DNS enabled (${YGG_DNS_SERVERS.size} resolvers)")
         }
         val fd = builder.establish() ?: run {
             AppLogger.e(TAG, "establish() returned null — VPN permission not granted")
+            netCallback?.let { runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) } }
+            netCallback = null
+            screenReceiver?.let { runCatching { unregisterReceiver(it) } }
+            screenReceiver = null
+            dnsProxyInstance?.stop(); dnsProxyInstance = null
+            yggMgr.stop()
             updateStatus { copy(overall = VpnState.ERROR) }
             return
         }
         tunFd = fd
 
-        val routerObj = PacketRouter(tunFd = fd, ygg = yggMgr, awg = awgMgr)
+        val routerObj = PacketRouter(tunFd = fd, ygg = yggMgr, awg = awgMgr, dnsProxy = dnsProxyInstance)
         ygg    = yggMgr
         awg    = awgMgr
         router = routerObj
         YggServiceAccess.manager = yggMgr
+        dnsProxyInstance?.let { yggMgr.dnsProxy = it }
 
         routerObj.start()
 
@@ -367,10 +456,18 @@ class YggVpnService : VpnService() {
         AppLogger.i(TAG, "stopVpn")
         YggServiceAccess.manager = null
         YggNetworkState.reset()
+        netCallback?.let { runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) } }
+        netCallback = null
+        screenReceiver?.let { runCatching { unregisterReceiver(it) } }
+        screenReceiver = null
+        savedPeers = emptyList()
+        ygg?.dnsProxy = null
+        dnsProxyInstance?.stop(); dnsProxyInstance = null
         awgLifecycleScope?.cancel(); awgLifecycleScope = null
         savedAwgConfig = null; savedAwgServerAddrBytes = null
         router?.stop(); awg?.stop(); ygg?.stop(); tunFd?.close()
         router = null; awg = null; ygg = null; tunFd = null
+        lastNotifText = ""
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         status = TunnelStatus(overall = VpnState.DISCONNECTED)
@@ -411,11 +508,6 @@ class YggVpnService : VpnService() {
         status = s.copy(overall = overall)
         AppLogger.d(TAG, "updateStatus: ygg=${s.ygg} awg=${s.awg} → overall=$overall")
         broadcastStatus()
-        if (overall == VpnState.CONNECTED || overall == VpnState.CONNECTING || overall == VpnState.ERROR) {
-            val notif = buildNotification(status)
-            val mgr = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
-            mgr.notify(NOTIF_ID, notif)
-        }
     }
 
     private fun broadcastStatus() {
@@ -430,11 +522,20 @@ class YggVpnService : VpnService() {
             putExtra(TunnelStatus.EXTRA_YGG_PEERS,   s.yggPeers)
             putExtra(TunnelStatus.EXTRA_AWG,         s.awg.name)
         })
-        // Re-post notification on every broadcast so it reappears after being
-        // swiped away (Android 14 allows dismissing FGS notifications).
+        // Re-post notification only when displayed text changes (saves battery by avoiding
+        // redundant notif updates on every 30s peer poll).
         if (s.overall != VpnState.IDLE && s.overall != VpnState.DISCONNECTED) {
-            val mgr = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
-            mgr.notify(NOTIF_ID, buildNotification(s))
+            val notifText = when (s.overall) {
+                VpnState.CONNECTED  -> "Ygg: ${s.yggAddress} | peers: ${s.yggPeers}"
+                VpnState.CONNECTING -> "Connecting…"
+                VpnState.ERROR      -> "Error"
+                else                -> "Connecting…"
+            }
+            if (notifText != lastNotifText) {
+                lastNotifText = notifText
+                val mgr = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+                mgr.notify(NOTIF_ID, buildNotification(s))
+            }
         }
     }
 

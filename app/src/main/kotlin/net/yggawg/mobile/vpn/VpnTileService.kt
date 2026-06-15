@@ -109,11 +109,19 @@ class VpnTileService : TileService() {
         val permissionNeeded = VpnService.prepare(this) != null
 
         if (!permissionNeeded && awgConf != null && peers.isNotEmpty()) {
+            val yggKey = prefs.getString("ygg_private_key", null)
+                ?: run {
+                    val bytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+                    val hex = bytes.joinToString("") { "%02x".format(it) }
+                    prefs.edit().putString("ygg_private_key", hex).apply()
+                    hex
+                }
             AppLogger.d(TAG,"Tile: starting VPN directly (${peers.size} peers)")
             startForegroundService(Intent(this, YggVpnService::class.java).apply {
                 action = YggVpnService.ACTION_START
                 putStringArrayListExtra(YggVpnService.EXTRA_YGG_PEERS, ArrayList(peers))
                 putExtra(YggVpnService.EXTRA_AWG_CONF, awgConf)
+                putExtra(YggVpnService.EXTRA_YGG_KEY, yggKey)
             })
         } else {
             AppLogger.d(TAG,"Tile: opening app (permNeeded=$permissionNeeded conf=${awgConf != null} peers=${peers.size})")

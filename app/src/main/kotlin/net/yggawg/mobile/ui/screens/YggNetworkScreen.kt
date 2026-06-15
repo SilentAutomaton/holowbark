@@ -54,26 +54,44 @@ fun YggNetworkScreen(vm: VpnStateViewModel) {
             // ── Self address ──────────────────────────────────────────────────
             item {
                 SectionCard(title = "My Address") {
-                    if (selfAddr.isEmpty()) {
-                        Text("VPN not running", color = MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.padding(8.dp))
-                    } else {
+                    Column(modifier = Modifier.padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (selfAddr.isEmpty()) {
+                            Text("VPN not running", color = MaterialTheme.colorScheme.outline)
+                        } else {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = selfAddr,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconButton(onClick = {
+                                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("Yggdrasil address", selfAddr))
+                                }) {
+                                    Icon(Icons.Default.ContentCopy, "Copy address",
+                                        modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
                         Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(8.dp),
                         ) {
                             Text(
-                                text = selfAddr,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 13.sp,
+                                "Persistent identity key. Takes effect on next connect.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline,
                                 modifier = Modifier.weight(1f),
                             )
-                            IconButton(onClick = {
-                                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                cm.setPrimaryClip(ClipData.newPlainText("Yggdrasil address", selfAddr))
-                            }) {
-                                Icon(Icons.Default.ContentCopy, "Copy address",
-                                    modifier = Modifier.size(18.dp))
+                            TextButton(
+                                onClick = { vm.resetYggKey() },
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error),
+                            ) {
+                                Text("Regenerate", style = MaterialTheme.typography.labelMedium)
                             }
                         }
                     }
@@ -140,7 +158,7 @@ fun YggNetworkScreen(vm: VpnStateViewModel) {
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
                             Text(
-                                "Community resolvers (Revertron).\nSupports .ygg domains and ad blocking.",
+                                ".ygg domains via Yggdrasil overlay; all other DNS via your WireGuard server's DNS.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.outline,
                                 modifier = Modifier.weight(1f),
@@ -149,10 +167,6 @@ fun YggNetworkScreen(vm: VpnStateViewModel) {
                                 onCheckedChange = { vm.toggleYggDns() })
                         }
                         if (yggDnsEnabled) {
-                            YggVpnService.YGG_DNS_SERVERS.forEach { addr ->
-                                Text(addr, style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary)
-                            }
                             Text("Takes effect on next connect.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.outline)

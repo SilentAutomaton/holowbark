@@ -12,7 +12,6 @@ import net.yggawg.mobile.peers.models.Peer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
-import java.util.regex.Pattern
 
 /**
  * Port of fetch.py.
@@ -35,7 +34,7 @@ import java.util.regex.Pattern
  *
  * Fallback chain on network failure:
  *   1. Network fetch (publicnodes.json + GitHub region map)
- *   2. Latest saved snapshot (up to 3 rolling slots in filesDir)
+ *   2. Latest saved snapshot (peers_snap.json in filesDir)
  *   3. Bundled res/raw/fallback_peers.json
  */
 class PeerRepository(private val db: PeerDatabase, private val context: Context) {
@@ -47,15 +46,7 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         private const val GITHUB_TREE_URL =
             "https://api.github.com/repos/yggdrasil-network/public-peers/git/trees/master?recursive=1"
         private const val CACHE_TTL_MS = 60 * 60 * 1000L // 1 hour
-
-        private const val SNAPSHOT_COUNT = 3
-        private const val PREFS_SNAP_IDX = "peers_snap_idx"
-
-        // Parses peer address: tls://host:port or tls://[ipv6]:port
-        // Groups: (1) = bracketed IPv6, (2) = plain host, (3) = port
-        private val HOST_RE = Pattern.compile(
-            """(?:tcp|tls|quic|wss?)://(?:\[([^\]]+)]|([^/:?\s]+)):(\d+)"""
-        )
+        private const val SNAP_FILE = "peers_snap.json"
     }
 
     private val http = OkHttpClient.Builder()
@@ -70,6 +61,9 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         .build()
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    // ponytail: cached in memory for the lifetime of this instance; region map is static
+    private var regionMapCache: Map<String, String>? = null
 
     // -------------------------------------------------------------------------
     // Public API
@@ -87,9 +81,6 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         return db.peerDao().getByCountry(countryKey)
     }
 
-    suspend fun getUpPeers(countryKey: String): List<Peer> =
-        db.peerDao().getByCountry(countryKey).filter { it.up }
-
     // -------------------------------------------------------------------------
     // Cache
     // -------------------------------------------------------------------------
@@ -102,7 +93,7 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
 
     suspend fun fetchAndCache(): Int = withContext(Dispatchers.IO) {
         try {
-            val regionMap = buildRegionMap()
+            val regionMap = regionMapCache ?: buildRegionMap().also { regionMapCache = it }
             Log.d(TAG, "Region map: ${regionMap.size} files")
             val nodesText = fetchUrl(NODES_URL)
             val peers = parseNodes(nodesText, regionMap)
@@ -115,7 +106,7 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
             peers.size
         } catch (e: Exception) {
             Log.w(TAG, "Network fetch failed, trying snapshot: $e")
-            val snap = loadLatestSnapshot()
+            val snap = loadSnapshot()
             if (snap != null) {
                 Log.d(TAG, "Loaded snapshot: ${snap.size} peers")
                 db.peerDao().deleteAll()
@@ -133,38 +124,25 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
     }
 
     // -------------------------------------------------------------------------
-    // Snapshot: 3-slot rolling storage in filesDir
+    // Snapshot: single file in filesDir
     // -------------------------------------------------------------------------
 
     private fun saveSnapshot(peers: List<Peer>) {
-        val prefs = context.getSharedPreferences("yggawg", Context.MODE_PRIVATE)
-        val idx = prefs.getInt(PREFS_SNAP_IDX, 0)
-        val slot = idx % SNAPSHOT_COUNT
         try {
-            context.openFileOutput("peers_snap_$slot.json", Context.MODE_PRIVATE).use { out ->
+            context.openFileOutput(SNAP_FILE, Context.MODE_PRIVATE).use { out ->
                 out.write(json.encodeToString(peers).toByteArray(Charsets.UTF_8))
             }
-            prefs.edit().putInt(PREFS_SNAP_IDX, idx + 1).apply()
-            Log.d(TAG, "Saved snapshot slot $slot (${peers.size} peers)")
+            Log.d(TAG, "Saved snapshot (${peers.size} peers)")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to save snapshot: $e")
         }
     }
 
-    private fun loadLatestSnapshot(): List<Peer>? {
-        val prefs = context.getSharedPreferences("yggawg", Context.MODE_PRIVATE)
-        val idx = prefs.getInt(PREFS_SNAP_IDX, 0)
-        if (idx == 0) return null
-        for (i in 0 until SNAPSHOT_COUNT) {
-            val slot = ((idx - 1 - i) % SNAPSHOT_COUNT + SNAPSHOT_COUNT) % SNAPSHOT_COUNT
-            runCatching {
-                context.openFileInput("peers_snap_$slot.json").use { inp ->
-                    json.decodeFromString<List<Peer>>(inp.readBytes().toString(Charsets.UTF_8))
-                }
-            }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
-        }
-        return null
-    }
+    private fun loadSnapshot(): List<Peer>? = runCatching {
+        context.openFileInput(SNAP_FILE).use { inp ->
+            json.decodeFromString<List<Peer>>(inp.readBytes().toString(Charsets.UTF_8))
+        }.takeIf { it.isNotEmpty() }
+    }.getOrNull()
 
     private fun loadFallbackPeers(): List<Peer> {
         val text = context.resources.openRawResource(R.raw.fallback_peers).use { inp ->
@@ -192,7 +170,6 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
                 buildMap {
                     for (item in tree) {
                         val path = item.jsonObject["path"]?.jsonPrimitive?.content ?: continue
-                        // Only match "region/country.md" (exactly one slash, ends with .md)
                         if (!path.endsWith(".md") || path.count { it == '/' } != 1) continue
                         val region   = path.substringBefore('/')
                         val filename = path.substringAfter('/')
@@ -223,27 +200,23 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         val peers = mutableListOf<Peer>()
 
         for ((filename, peersEl) in root) {
-            // filename is like "russia.md"
             if (!filename.endsWith(".md")) continue
-            val slug      = filename.removeSuffix(".md")            // "russia"
-            val region    = regionMap.getOrDefault(filename, "other")
-            val countryKey = "$region/$slug"                        // "europe/russia"
+            val slug       = filename.removeSuffix(".md")
+            val region     = regionMap.getOrDefault(filename, "other")
+            val countryKey = "$region/$slug"
 
             val peersMap = peersEl.jsonObject
             for ((address, infoEl) in peersMap) {
                 val addr = address.trim()
-                val (host, port) = parseHostPort(addr) ?: continue
                 val info = infoEl.jsonObject
 
-                val up          = info["up"]?.jsonPrimitive?.booleanOrNull ?: false
-                val responseMs  = info["response_ms"]?.jsonPrimitive?.intOrNull
-                val lastSeen    = info["last_seen"]?.jsonPrimitive?.longOrNull?.let { it * 1000L }
+                val up         = info["up"]?.jsonPrimitive?.booleanOrNull ?: false
+                val responseMs = info["response_ms"]?.jsonPrimitive?.intOrNull
+                val lastSeen   = info["last_seen"]?.jsonPrimitive?.longOrNull?.let { it * 1000L }
 
                 peers += Peer(
                     address    = addr,
-                    host       = host,
-                    port       = port,
-                    ip         = null,   // DNS resolution deferred
+                    ip         = null,
                     country    = countryKey,
                     up         = up,
                     responseMs = responseMs,
@@ -253,15 +226,6 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
             }
         }
         return peers
-    }
-
-    /** Extract (host, port) from "tls://host:port" or "tls://[ipv6]:port". */
-    private fun parseHostPort(address: String): Pair<String, String>? {
-        val m = HOST_RE.matcher(address)
-        if (!m.find()) return null
-        val host = m.group(1) ?: m.group(2) ?: return null  // IPv6 or plain host
-        val port = m.group(3) ?: return null
-        return host to port
     }
 
     private fun fetchUrl(url: String): String {

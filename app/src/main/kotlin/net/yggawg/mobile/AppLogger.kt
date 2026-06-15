@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.ArrayDeque
 
 /**
  * In-memory circular log buffer — readable from the Logs UI screen.
@@ -21,17 +22,19 @@ object AppLogger {
     private const val MAX_LINES = 500
     private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
+    private val buf = ArrayDeque<Line>(MAX_LINES + 1)
     private val _lines = MutableStateFlow<List<Line>>(emptyList())
     val lines: StateFlow<List<Line>> = _lines.asStateFlow()
 
     @Synchronized
     fun append(level: Level, tag: String, msg: String) {
-        val line = Line(fmt.format(Date()), level, tag, msg)
-        val current = _lines.value
-        _lines.value = if (current.size >= MAX_LINES) current.drop(1) + line else current + line
+        if (buf.size >= MAX_LINES) buf.poll()
+        buf.add(Line(fmt.format(Date()), level, tag, msg))
+        _lines.value = buf.toList()
     }
 
-    fun clear() { _lines.value = emptyList() }
+    @Synchronized
+    fun clear() { buf.clear(); _lines.value = emptyList() }
 
     // Convenience wrappers — also forward to android.util.Log
     fun v(tag: String, msg: String) { Log.v(tag, msg); append(Level.V, tag, msg) }

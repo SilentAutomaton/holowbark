@@ -16,14 +16,19 @@ class YggdrasilManager(
     private val onStatusChange: (state: LayerState, address: String, peerCount: Int) -> Unit = { _, _, _ -> },
 ) {
     companion object {
-        private const val POLL_INTERVAL_MS = 5_000L
-        private const val PING_TIMEOUT_MS  = 4_000L
+        private const val POLL_INTERVAL_MS      = 30_000L
+        private const val POLL_INTERVAL_SCREEN_OFF = 60_000L
+        private const val PING_TIMEOUT_MS       = 4_000L
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     @Volatile private var ygg: Yggdrasil? = null
     /** AWG server 16-byte IPv6 address; packets from this src go to [onWGPacket]. */
     @Volatile var wgServerAddr: ByteArray? = null
+    /** Adjusted by YggVpnService based on screen state to reduce battery drain. */
+    @Volatile var pollIntervalMs: Long = POLL_INTERVAL_MS
+    /** Split-DNS proxy; receives Yggdrasil DNS responses before they reach the TUN. */
+    @Volatile var dnsProxy: SplitDnsProxy? = null
 
     /** Pending ICMPv6 pings: seq → (deferred, sentAt). */
     private val pendingPings = ConcurrentHashMap<Int, Pair<CompletableDeferred<Unit>, Long>>()
@@ -155,7 +160,22 @@ class YggdrasilManager(
                     }
                 }
 
-                // 3. Everything else → TUN
+                // 3. Yggdrasil DNS response → SplitDnsProxy (IPv6 UDP, src in 200::/7, srcPort=53)
+                val proxy = dnsProxy
+                if (proxy != null
+                    && pkt.size >= 48
+                    && (pkt[0].toInt() and 0xF0) == 0x60   // IPv6
+                    && pkt[6] == 0x11.toByte()              // UDP
+                    && (pkt[8].toInt() and 0xFE) == 0x02   // src in 200::/7
+                ) {
+                    val srcPort = ((pkt[40].toInt() and 0xFF) shl 8) or (pkt[41].toInt() and 0xFF)
+                    if (srcPort == 53) {
+                        proxy.handleYggDnsResponse(pkt)
+                        continue
+                    }
+                }
+
+                // 4. Everything else → TUN
                 onPacketOut(pkt)
             } catch (e: Exception) {
                 if (scope.isActive) AppLogger.w(TAG, "recv: $e")
@@ -172,7 +192,7 @@ class YggdrasilManager(
     private suspend fun pollPeers(inst: Yggdrasil) {
         var lastCount = -1
         while (scope.isActive && ygg != null) {
-            delay(POLL_INTERVAL_MS)
+            delay(pollIntervalMs)
             val addr  = runCatching { inst.addressString }.getOrDefault("")
             val json  = runCatching { inst.peersJSON ?: "[]" }.getOrDefault("[]")
             val peers = parsePeers(json)

@@ -38,14 +38,15 @@ class AwgManager(
 
     @Volatile private var backend: Backend? = null
     @Volatile private var activeScope: CoroutineScope? = null
+    private var protocolLabel = "WireGuard"
 
     fun start(config: AwgConfig) {
         if (backend != null) return
-        val protocolLabel = if (config.isAwg) "AmneziaWG" else "WireGuard"
-        AppLogger.i(TAG, "Starting $protocolLabel → ${config.endpoint}")
+        protocolLabel = if (config.isAwg) "AmneziaWG" else "WireGuard"
+        AppLogger.i(protocolLabel, "Starting $protocolLabel → ${config.endpoint}")
 
         val settings = buildUAPI(config)
-        AppLogger.d(TAG, "UAPI settings:\n${settings.replace(
+        AppLogger.d(protocolLabel, "UAPI settings:\n${settings.replace(
             Regex("(?m)^(private_key|preshared_key)=.+$"), "$1=[REDACTED]")}")
 
         val b = Backend()
@@ -56,9 +57,9 @@ class AwgManager(
             val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
             activeScope = scope
             scope.launch { readLoop(b, scope) }
-            AppLogger.i(TAG, "$protocolLabel started")
+            AppLogger.i(protocolLabel, "$protocolLabel started")
         } catch (e: Exception) {
-            AppLogger.e(TAG, "Failed to start $protocolLabel: ${e.javaClass.simpleName}: ${e.message}")
+            AppLogger.e(protocolLabel, "Failed to start $protocolLabel: ${e.javaClass.simpleName}: ${e.message}")
             onStatusChange(LayerState.ERROR)
         }
     }
@@ -67,8 +68,8 @@ class AwgManager(
         activeScope?.cancel(); activeScope = null
         val b = backend ?: return
         backend = null
-        try { b.stop() } catch (e: Exception) { AppLogger.w(TAG, "stop: $e") }
-        AppLogger.i(TAG, "WG backend stopped")
+        try { b.stop() } catch (e: Exception) { AppLogger.w(protocolLabel, "stop: $e") }
+        AppLogger.i(protocolLabel, "$protocolLabel stopped")
     }
 
     /** Write a plaintext IP packet into the AWG stack for encryption and sending. */
@@ -76,7 +77,7 @@ class AwgManager(
         try {
             backend?.sendPacket(packet)
         } catch (e: Exception) {
-            AppLogger.w(TAG, "sendPacket: $e")
+            AppLogger.w(protocolLabel, "sendPacket: $e")
         }
     }
 
@@ -88,7 +89,7 @@ class AwgManager(
         try {
             backend?.sendWGPacket(wgPacket)
         } catch (e: Exception) {
-            AppLogger.w(TAG, "sendWGPacket: $e")
+            AppLogger.w(protocolLabel, "sendWGPacket: $e")
         }
     }
 
@@ -100,7 +101,7 @@ class AwgManager(
         return try {
             backend?.recvWGPacket()
         } catch (e: Exception) {
-            AppLogger.w(TAG, "recvWGPacket: $e")
+            AppLogger.w(protocolLabel, "recvWGPacket: $e")
             null
         }
     }
@@ -113,13 +114,13 @@ class AwgManager(
             val pkt = try {
                 b.recvPacket()
             } catch (e: Exception) {
-                if (scope.isActive) AppLogger.w(TAG, "recvPacket: $e")
+                if (scope.isActive) AppLogger.w(protocolLabel, "recvPacket: $e")
                 null
             }
             if (pkt != null) {
                 if (firstPacket) {
                     firstPacket = false
-                    AppLogger.i(TAG, "WG handshake complete — tunnel UP (${pkt.size} bytes)")
+                    AppLogger.i(protocolLabel, "WG handshake complete — tunnel UP (${pkt.size} bytes)")
                     onStatusChange(LayerState.UP)
                 }
                 if (pkt.isNotEmpty()) {

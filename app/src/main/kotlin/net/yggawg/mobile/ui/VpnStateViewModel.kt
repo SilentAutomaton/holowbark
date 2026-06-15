@@ -28,6 +28,7 @@ import net.yggawg.mobile.vpn.YggNetworkState
 import net.yggawg.mobile.vpn.YggServiceAccess
 import net.yggawg.mobile.vpn.YggVpnService
 import net.yggawg.mobile.vpn.parseYggAddrBytes
+import java.security.SecureRandom
 
 class VpnStateViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -133,8 +134,22 @@ class VpnStateViewModel(app: Application) : AndroidViewModel(app) {
             action = YggVpnService.ACTION_START
             putStringArrayListExtra(YggVpnService.EXTRA_YGG_PEERS, ArrayList(peers))
             _awgConfig.value?.let { putExtra(YggVpnService.EXTRA_AWG_CONF, it.toConfString()) }
+            putExtra(YggVpnService.EXTRA_YGG_KEY, getOrCreateYggKey())
         }
         ContextCompat.startForegroundService(app, intent)
+    }
+
+    fun getOrCreateYggKey(): String {
+        val existing = prefs.getString("ygg_private_key", null)
+        if (existing != null) return existing
+        val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val hex = bytes.joinToString("") { "%02x".format(it) }
+        prefs.edit().putString("ygg_private_key", hex).apply()
+        return hex
+    }
+
+    fun resetYggKey() {
+        prefs.edit().remove("ygg_private_key").apply()
     }
 
     fun disconnect() {

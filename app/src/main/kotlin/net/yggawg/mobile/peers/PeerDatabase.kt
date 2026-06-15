@@ -40,7 +40,7 @@ data class CountrySummaryRow(
     val upPeers: Int,
 )
 
-@Database(entities = [Peer::class], version = 1, exportSchema = false)
+@Database(entities = [Peer::class], version = 2, exportSchema = false)
 abstract class PeerDatabase : RoomDatabase() {
     abstract fun peerDao(): PeerDao
 
@@ -53,7 +53,7 @@ abstract class PeerDatabase : RoomDatabase() {
                     context.applicationContext,
                     PeerDatabase::class.java,
                     "peers.db"
-                ).build().also { INSTANCE = it }
+                ).fallbackToDestructiveMigration().build().also { INSTANCE = it }
             }
     }
 }

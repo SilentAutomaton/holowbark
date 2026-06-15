@@ -4,6 +4,7 @@ import kotlinx.coroutines.*
 import net.yggawg.mobile.AppLogger
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.UnknownHostException
@@ -22,6 +23,7 @@ class PacketRouter(
     private val tunFd: android.os.ParcelFileDescriptor,
     private val ygg: YggdrasilManager,
     private val awg: AwgManager,
+    private val dnsProxy: SplitDnsProxy? = null,
 ) {
     companion object {
         private const val TAG = "PacketRouter"
@@ -71,6 +73,25 @@ class PacketRouter(
 
     private fun dispatch(packet: ByteArray) {
         val dst = packet.destinationAddress() ?: return
+
+        // Intercept UDP DNS queries to the split-DNS proxy virtual IP
+        val proxy = dnsProxy
+        if (proxy != null
+            && dst is Inet4Address
+            && (dst as Inet4Address).address.contentEquals(SplitDnsProxy.PROXY_IP)
+            && packet.size >= 20 && packet[9] == 0x11.toByte()  // IP protocol = UDP
+        ) {
+            val ihl = (packet[0].toInt() and 0x0F) * 4
+            if (packet.size >= ihl + 4) {
+                val dstPort = ((packet[ihl + 2].toInt() and 0xFF) shl 8) or
+                               (packet[ihl + 3].toInt() and 0xFF)
+                if (dstPort == 53) {
+                    proxy.handleQuery(packet)
+                    return
+                }
+            }
+        }
+
         if (dst.isYggdrasil()) {
             ygg.writePacket(packet)
         } else {

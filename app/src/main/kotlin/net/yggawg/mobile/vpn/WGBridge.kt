@@ -215,3 +215,74 @@ fun buildDummyIPv4(): ByteArray {
     buf.putShort(1)                  // sequence
     return buf.array()
 }
+
+// ─── Split-DNS proxy helpers ──────────────────────────────────────────────────
+
+/**
+ * Build an IPv4 UDP packet (e.g. DNS reply from the local proxy to the system resolver).
+ * The IPv4 header checksum is computed; the UDP checksum is 0 (optional for IPv4 UDP).
+ */
+fun buildIPv4UdpReply(
+    srcIp: ByteArray,
+    dstIp: ByteArray,
+    srcPort: Int,
+    dstPort: Int,
+    payload: ByteArray,
+): ByteArray {
+    val udpLen = 8 + payload.size
+    val totalLen = 20 + udpLen
+    val buf = ByteBuffer.allocate(totalLen).order(ByteOrder.BIG_ENDIAN)
+    buf.put(0x45.toByte())
+    buf.put(0)
+    buf.putShort(totalLen.toShort())
+    buf.putShort(0)
+    buf.putShort(0x4000.toShort())  // DF flag
+    buf.put(64.toByte())
+    buf.put(0x11.toByte())           // UDP
+    buf.putShort(0)                  // checksum placeholder
+    buf.put(srcIp)
+    buf.put(dstIp)
+    buf.putShort(srcPort.toShort())
+    buf.putShort(dstPort.toShort())
+    buf.putShort(udpLen.toShort())
+    buf.putShort(0)                  // UDP checksum = 0 (disabled)
+    buf.put(payload)
+    val bytes = buf.array()
+    val cksum = ipv4HeaderChecksum(bytes, 0, 20)
+    bytes[10] = (cksum ushr 8).toByte()
+    bytes[11] = (cksum and 0xFF).toByte()
+    return bytes
+}
+
+private fun ipv4HeaderChecksum(data: ByteArray, offset: Int, len: Int): Int {
+    var sum = 0L
+    var i = offset
+    while (i < offset + len - 1) {
+        sum += ((data[i].toLong() and 0xFF) shl 8) or (data[i + 1].toLong() and 0xFF)
+        i += 2
+    }
+    while (sum ushr 16 != 0L) sum = (sum and 0xFFFF) + (sum ushr 16)
+    return (sum.inv() and 0xFFFF).toInt()
+}
+
+/**
+ * Extract the first QNAME from a raw DNS payload (starting with the 12-byte header).
+ * Returns the name in lowercase dot notation (e.g. "www.example.ygg"), or "" on error.
+ * Compression pointers are not followed — returns the partial name before the pointer.
+ */
+fun extractDnsName(dnsPayload: ByteArray): String {
+    if (dnsPayload.size < 13) return ""
+    val sb = StringBuilder()
+    var i = 12  // skip 12-byte DNS header
+    while (i < dnsPayload.size) {
+        val len = dnsPayload[i].toInt() and 0xFF
+        if (len == 0) break
+        if ((len and 0xC0) == 0xC0) break  // compression pointer — stop
+        i++
+        if (i + len > dnsPayload.size) break
+        if (sb.isNotEmpty()) sb.append('.')
+        sb.append(String(dnsPayload, i, len, Charsets.US_ASCII))
+        i += len
+    }
+    return sb.toString().lowercase()
+}

@@ -1,5 +1,6 @@
 package net.yggawg.mobile.ui.screens
 
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -7,6 +8,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import net.yggawg.mobile.ui.VpnStateViewModel
 import net.yggawg.mobile.vpn.LayerState
@@ -35,6 +37,7 @@ fun HomeScreen(
     }
 
     val protocolLabel = if (awgConfig?.isAwg == true) "AmneziaWG" else "WireGuard"
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     Scaffold(
         floatingActionButton = {
@@ -46,25 +49,54 @@ fun HomeScreen(
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            LayerStatusCard(tunnelStatus, protocolLabel, onRestartAwg)
-
-            AwgConfigCard(
-                protocolLabel = protocolLabel,
-                endpoint = awgConfig?.endpoint,
-                onImportClick = onNavigateImport,
-            )
-
-            PeersCard(
-                selectedCount = selectedPeers.size,
-                onBrowseClick = onNavigateCountries,
-            )
+        if (isLandscape) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    LayerStatusCard(tunnelStatus, protocolLabel, onRestartAwg)
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    AwgConfigCard(
+                        protocolLabel = protocolLabel,
+                        endpoint = awgConfig?.endpoint,
+                        onImportClick = onNavigateImport,
+                    )
+                    PeersCard(
+                        selectedCount = selectedPeers.size,
+                        onBrowseClick = onNavigateCountries,
+                    )
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                LayerStatusCard(tunnelStatus, protocolLabel, onRestartAwg)
+                AwgConfigCard(
+                    protocolLabel = protocolLabel,
+                    endpoint = awgConfig?.endpoint,
+                    onImportClick = onNavigateImport,
+                )
+                PeersCard(
+                    selectedCount = selectedPeers.size,
+                    onBrowseClick = onNavigateCountries,
+                )
+            }
         }
     }
 }
