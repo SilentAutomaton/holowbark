@@ -13,6 +13,13 @@ Android-клиент WireGuard, который соединяется со св�
 
 Готовые APK-файлы — в разделе [Releases](https://github.com/SilentAutomaton/holowbark/releases).
 
+<p align="center">
+  <img src="docs/screenshots/connect.png" width="24%" alt="Экран подключения: кольцо показывает пиры и туннель">
+  <img src="docs/screenshots/settings.png" width="24%" alt="Настройки">
+  <img src="docs/screenshots/peers.png" width="24%" alt="Список пиров с полем для добавления своего">
+  <img src="docs/screenshots/network.png" width="24%" alt="Диагностика сети: адрес, пинг, DNS, живые пиры">
+</p>
+
 ## Путь пакета
 
 ```
