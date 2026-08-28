@@ -191,21 +191,25 @@ class YggdrasilManager(
 
     private suspend fun pollPeers(inst: Yggdrasil) {
         var lastCount = -1
+        var lastAddr  = ""
         while (scope.isActive && ygg != null) {
-            delay(pollIntervalMs)
             val addr  = runCatching { inst.addressString }.getOrDefault("")
             val json  = runCatching { inst.peersJSON ?: "[]" }.getOrDefault("[]")
             val peers = parsePeers(json)
             val count = peers.count { it.up }
 
-            if (count != lastCount) {
-                AppLogger.i(TAG, "Peer count changed: $lastCount → $count (addr=$addr)")
-                lastCount = count
-            }
             YggNetworkState.selfAddress.value = addr
             YggNetworkState.peers.value = peers
-            val state = if (count > 0) LayerState.UP else LayerState.STARTING
-            onStatusChange(state, addr, count)
+            if (count != lastCount || addr != lastAddr) {
+                AppLogger.i(TAG, "Peer count changed: $lastCount → $count (addr=$addr)")
+                lastCount = count
+                lastAddr  = addr
+                val state = if (count > 0) LayerState.UP else LayerState.STARTING
+                onStatusChange(state, addr, count)
+            }
+            // Fast-poll while no peer is up so UP detection (and the AWG chain
+            // gated on it) reacts in ~1s instead of waiting a full poll interval.
+            delay(if (count == 0) 1_000L else pollIntervalMs)
         }
     }
 

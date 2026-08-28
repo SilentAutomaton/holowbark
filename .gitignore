@@ -11,3 +11,5 @@ local.properties
 *.jks
 entities.json
 .claude/settings.local.json
+*.apk
+*.idsig

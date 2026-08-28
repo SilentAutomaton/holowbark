@@ -40,7 +40,7 @@ class VpnStateViewModel(app: Application) : AndroidViewModel(app) {
     // State
     // -------------------------------------------------------------------------
 
-    private val _tunnelStatus = MutableStateFlow(TunnelStatus())
+    private val _tunnelStatus = MutableStateFlow(TunnelStatus.fromPrefs(prefs))
     val tunnelStatus: StateFlow<TunnelStatus> = _tunnelStatus.asStateFlow()
 
     /** Convenience derived flow — overall VPN state only. */
@@ -141,11 +141,18 @@ class VpnStateViewModel(app: Application) : AndroidViewModel(app) {
 
     fun getOrCreateYggKey(): String {
         val existing = prefs.getString("ygg_private_key", null)
-        if (existing != null) return existing
-        val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        val hex = bytes.joinToString("") { "%02x".format(it) }
+        if (existing != null && existing.length == 128) return existing
+        val hex = generateEd25519Hex()
         prefs.edit().putString("ygg_private_key", hex).apply()
         return hex
+    }
+
+    private fun generateEd25519Hex(): String {
+        val kp = java.security.KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        // RFC 8410 DER: PKCS8 seed at offset 16 (32 bytes), X509 pubkey at offset 12 (32 bytes)
+        val seed = kp.private.encoded.sliceArray(16..47)
+        val pub  = kp.public.encoded.sliceArray(12..43)
+        return (seed + pub).joinToString("") { "%02x".format(it) }
     }
 
     fun resetYggKey() {

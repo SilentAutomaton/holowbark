@@ -43,6 +43,11 @@ class YggVpnService : VpnService() {
         private const val TAG = "YggVpnService"
         private const val NOTIF_ID = 1
 
+        /** True while the VPN is actually up in this process. Prefs alone can go
+         *  stale after process death/reboot — always check this alongside them. */
+        @Volatile var isRunning = false
+            private set
+
         const val ACTION_START       = "net.yggawg.mobile.START_VPN"
         const val ACTION_STOP        = "net.yggawg.mobile.STOP_VPN"
         const val ACTION_STATUS      = "net.yggawg.mobile.VPN_STATUS"
@@ -80,8 +85,9 @@ class YggVpnService : VpnService() {
     private var savedPeers: List<String> = emptyList()
     private var netCallback: ConnectivityManager.NetworkCallback? = null
     private var screenReceiver: BroadcastReceiver? = null
-    private var lastNotifText = ""
+    @Volatile private var lastNotifText = ""
     private var dnsProxyInstance: SplitDnsProxy? = null
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
 
     @Volatile private var status = TunnelStatus()
 
@@ -122,8 +128,16 @@ class YggVpnService : VpnService() {
         AppLogger.i(TAG, "startVpn peers=${peers.size} awg=${awgConfig?.endpoint} multicast=$multicast")
         updateStatus { copy(overall = VpnState.CONNECTING, ygg = LayerState.STARTING,
                            awg = if (awgConfig != null) LayerState.STARTING else LayerState.IDLE) }
+        // Must call startForeground() within 5 s of startForegroundService() on API 26+.
+        // Do it before yggMgr.start() which can take seconds to start the Go runtime.
+        startForeground(NOTIF_ID, buildNotification(status))
 
-        val peerIps: Set<InetAddress> = peers.flatMap { parsePeerHosts(it) }.toSet()
+        // Resolve peer hostnames in parallel on a background thread while Yggdrasil starts.
+        val peerIpsFuture = java.util.concurrent.CompletableFuture.supplyAsync {
+            peers.toSet().parallelStream()
+                .flatMap { parsePeerHosts(it).stream() }
+                .collect(java.util.stream.Collectors.toSet<InetAddress>())
+        }
 
         // Start Yggdrasil before establish() so we get the real overlay address
         // (derived from the private key) to assign to the TUN interface.
@@ -199,6 +213,14 @@ class YggVpnService : VpnService() {
         // after startJSON(), no need to wait for peer connections.
         val yggAddress = yggMgr.getAddress().ifEmpty { "200::" }
         AppLogger.i(TAG, "Yggdrasil address: $yggAddress")
+
+        // Collect DNS results — should be ready by now (ran in parallel with Ygg startup)
+        val peerIps: Set<InetAddress> = try {
+            peerIpsFuture.get(3, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: Exception) {
+            AppLogger.w(TAG, "Peer DNS timed out — route exclusions may be incomplete")
+            peerIpsFuture.cancel(true); emptySet()
+        }
 
         val physicalHasIPv6: Boolean = hasPhysicalIPv6()
         AppLogger.i(TAG, "physicalHasIPv6=$physicalHasIPv6")
@@ -332,6 +354,7 @@ class YggVpnService : VpnService() {
             return
         }
         tunFd = fd
+        isRunning = true
 
         val routerObj = PacketRouter(tunFd = fd, ygg = yggMgr, awg = awgMgr, dnsProxy = dnsProxyInstance)
         ygg    = yggMgr
@@ -355,7 +378,9 @@ class YggVpnService : VpnService() {
             }
         }
 
-        startForeground(NOTIF_ID, buildNotification(TunnelStatus()))
+        val wm = applicationContext.getSystemService(WIFI_SERVICE) as? android.net.wifi.WifiManager
+        wifiLock = wm?.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "holowbark:vpn")
+        wifiLock?.acquire()
         AppLogger.i(TAG, "VPN started, waiting for peer connections")
     }
 
@@ -454,6 +479,7 @@ class YggVpnService : VpnService() {
 
     private fun stopVpn() {
         AppLogger.i(TAG, "stopVpn")
+        isRunning = false
         YggServiceAccess.manager = null
         YggNetworkState.reset()
         netCallback?.let { runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) } }
@@ -467,6 +493,7 @@ class YggVpnService : VpnService() {
         savedAwgConfig = null; savedAwgServerAddrBytes = null
         router?.stop(); awg?.stop(); ygg?.stop(); tunFd?.close()
         router = null; awg = null; ygg = null; tunFd = null
+        wifiLock?.let { runCatching { it.release() } }; wifiLock = null
         lastNotifText = ""
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -512,8 +539,13 @@ class YggVpnService : VpnService() {
 
     private fun broadcastStatus() {
         val s = status
-        getSharedPreferences("yggawg", android.content.Context.MODE_PRIVATE)
-            .edit().putString("vpn_state", s.overall.name).apply()
+        getSharedPreferences("yggawg", android.content.Context.MODE_PRIVATE).edit()
+            .putString("vpn_state",    s.overall.name)
+            .putString("ygg_layer",    s.ygg.name)
+            .putString("ygg_address",  s.yggAddress)
+            .putInt   ("ygg_peers",    s.yggPeers)
+            .putString("awg_layer",    s.awg.name)
+            .apply()
         sendBroadcast(Intent(ACTION_STATUS).apply {
             setPackage(packageName)
             putExtra(TunnelStatus.EXTRA_OVERALL,     s.overall.name)
@@ -605,7 +637,7 @@ internal fun VpnService.hasPhysicalIPv6(): Boolean {
  *
  *   "tcp://89.44.86.85:12345"            → [89.44.86.85]
  *   "quic://[2a09:5302:ffff::132a]:65535" → [2a09:5302:ffff::132a]
- *   "tls://hostname.example.com:443"     → [<all A/AAAA records>] or [] on failure
+ *   "tls://hostname.example.com:443"     → [] (skipped — hostname DNS would block main thread)
  */
 internal fun parsePeerHosts(addr: String): List<InetAddress> {
     val hostPart = addr.substringAfter("://")

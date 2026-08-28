@@ -39,20 +39,23 @@ class VpnTileService : TileService() {
     override fun onStartListening() {
         // Restore last known VPN state from SharedPrefs so the tile
         // shows the correct state immediately without waiting for a broadcast.
-        val savedState = getSharedPreferences("yggawg", Context.MODE_PRIVATE)
-            .getString("vpn_state", null)
-        if (savedState != null) {
-            runCatching { VpnState.valueOf(savedState) }.getOrNull()?.let { state ->
-                currentState = state
-                qsTile?.let { tile ->
-                    tile.state = when (state) {
-                        VpnState.CONNECTED, VpnState.CONNECTING -> Tile.STATE_ACTIVE
-                        VpnState.ERROR -> Tile.STATE_UNAVAILABLE
-                        else -> Tile.STATE_INACTIVE
-                    }
-                    tile.updateTile()
-                }
+        // Prefs go stale after process death/reboot — trust them only while
+        // the service is actually running.
+        val savedState = if (YggVpnService.isRunning) {
+            getSharedPreferences("yggawg", Context.MODE_PRIVATE)
+                .getString("vpn_state", null)
+        } else null
+        val state = savedState
+            ?.let { runCatching { VpnState.valueOf(it) }.getOrNull() }
+            ?: VpnState.IDLE
+        currentState = state
+        qsTile?.let { tile ->
+            tile.state = when (state) {
+                VpnState.CONNECTED, VpnState.CONNECTING -> Tile.STATE_ACTIVE
+                VpnState.ERROR -> Tile.STATE_UNAVAILABLE
+                else -> Tile.STATE_INACTIVE
             }
+            tile.updateTile()
         }
 
         val r = object : BroadcastReceiver() {
@@ -84,15 +87,19 @@ class VpnTileService : TileService() {
 
     override fun onClick() {
         unlockAndRun {
-            when (currentState) {
-                VpnState.CONNECTED, VpnState.CONNECTING -> {
-                    AppLogger.d(TAG,"Tile: stopping VPN")
-                    startForegroundService(
-                        Intent(this, YggVpnService::class.java)
-                            .setAction(YggVpnService.ACTION_STOP)
-                    )
-                }
-                else -> tryStartVpnOrOpenApp()
+            val stoppable = currentState == VpnState.CONNECTED ||
+                currentState == VpnState.CONNECTING || currentState == VpnState.ERROR
+            if (stoppable && YggVpnService.isRunning) {
+                AppLogger.d(TAG,"Tile: stopping VPN")
+                // Plain startService: the service is running, and stopVpn() never
+                // calls startForeground(), so startForegroundService would risk
+                // an FGS-did-not-start crash.
+                startService(
+                    Intent(this, YggVpnService::class.java)
+                        .setAction(YggVpnService.ACTION_STOP)
+                )
+            } else {
+                tryStartVpnOrOpenApp()
             }
         }
     }
@@ -109,10 +116,12 @@ class VpnTileService : TileService() {
         val permissionNeeded = VpnService.prepare(this) != null
 
         if (!permissionNeeded && awgConf != null && peers.isNotEmpty()) {
-            val yggKey = prefs.getString("ygg_private_key", null)
+            val yggKey = prefs.getString("ygg_private_key", null)?.takeIf { it.length == 128 }
                 ?: run {
-                    val bytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
-                    val hex = bytes.joinToString("") { "%02x".format(it) }
+                    val kp = java.security.KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+                    val seed = kp.private.encoded.sliceArray(16..47)
+                    val pub  = kp.public.encoded.sliceArray(12..43)
+                    val hex = (seed + pub).joinToString("") { "%02x".format(it) }
                     prefs.edit().putString("ygg_private_key", hex).apply()
                     hex
                 }

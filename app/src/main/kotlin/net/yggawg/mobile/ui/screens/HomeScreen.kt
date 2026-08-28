@@ -112,7 +112,7 @@ private fun ConnectFab(
     FloatingActionButton(
         onClick = {
             when (state) {
-                VpnState.CONNECTED, VpnState.CONNECTING -> onDisconnect()
+                VpnState.CONNECTED, VpnState.CONNECTING, VpnState.ERROR -> onDisconnect()
                 else -> onConnect()
             }
         },
@@ -124,9 +124,9 @@ private fun ConnectFab(
     ) {
         Icon(
             imageVector = when (state) {
-                VpnState.CONNECTED  -> Icons.Default.Stop
-                VpnState.CONNECTING -> Icons.Default.HourglassTop
-                else                -> Icons.Default.PlayArrow
+                VpnState.CONNECTED, VpnState.ERROR -> Icons.Default.Stop
+                VpnState.CONNECTING              -> Icons.Default.HourglassTop
+                else                             -> Icons.Default.PlayArrow
             },
             contentDescription = if (state == VpnState.CONNECTED) "Disconnect" else "Connect",
         )

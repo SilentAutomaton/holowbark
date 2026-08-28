@@ -24,6 +24,26 @@ data class TunnelStatus(
         const val EXTRA_YGG_PEERS    = "ygg_peer_count"
         const val EXTRA_AWG          = "awg_layer"
 
+        fun fromPrefs(prefs: android.content.SharedPreferences): TunnelStatus {
+            // Prefs go stale after process death/reboot — only meaningful while
+            // the service is actually up in this process.
+            if (!YggVpnService.isRunning) return TunnelStatus()
+            val overall = prefs.getString("vpn_state", null)
+                ?.let { runCatching { VpnState.valueOf(it) }.getOrNull() }
+                ?: return TunnelStatus()
+            // Don't restore transient states — they'll be updated by the next broadcast
+            if (overall == VpnState.CONNECTING) return TunnelStatus()
+            return TunnelStatus(
+                overall    = overall,
+                ygg        = prefs.getString("ygg_layer", null)
+                    ?.let { runCatching { LayerState.valueOf(it) }.getOrNull() } ?: LayerState.IDLE,
+                yggAddress = prefs.getString("ygg_address", "") ?: "",
+                yggPeers   = prefs.getInt("ygg_peers", 0),
+                awg        = prefs.getString("awg_layer", null)
+                    ?.let { runCatching { LayerState.valueOf(it) }.getOrNull() } ?: LayerState.IDLE,
+            )
+        }
+
         fun fromIntent(intent: android.content.Intent): TunnelStatus? {
             val overall = intent.getStringExtra(EXTRA_OVERALL)
                 ?.let { runCatching { VpnState.valueOf(it) }.getOrNull() }

@@ -19,7 +19,7 @@ object YggNetworkState {
         val lastError: String,
     )
 
-    /** Live list of Yggdrasil peers; updated every 5 s by YggdrasilManager. */
+    /** Live list of Yggdrasil peers; updated every 30 s by YggdrasilManager. */
     val peers = MutableStateFlow<List<PeerInfo>>(emptyList())
 
     /** Our own Yggdrasil address string (set after Yggdrasil starts). */
