@@ -20,7 +20,7 @@ class AwgConfigTest {
 
         [Peer]
         PublicKey = $publicPlaceholder
-        Endpoint = [200:4825:fd69:6d41:5475:a08a:8885:9542]:51820
+        Endpoint = [200:1111:2222:3333:4444:5555:6666:7777]:51820
         AllowedIPs = 0.0.0.0/0, ::/0
     """.trimIndent()
 
@@ -63,15 +63,15 @@ class AwgConfigTest {
     @Test
     fun parse_unbracketedIpv6Endpoint_isBracketed() {
         val config = parseAwgConf(
-            minimal.replace("[200:4825:fd69:6d41:5475:a08a:8885:9542]:51820",
-                "200:4825:fd69:6d41:5475:a08a:8885:9542:51820"))
-        assertEquals("[200:4825:fd69:6d41:5475:a08a:8885:9542]:51820", config.endpoint)
+            minimal.replace("[200:1111:2222:3333:4444:5555:6666:7777]:51820",
+                "200:1111:2222:3333:4444:5555:6666:7777:51820"))
+        assertEquals("[200:1111:2222:3333:4444:5555:6666:7777]:51820", config.endpoint)
     }
 
     @Test
     fun parse_ipv4Endpoint_isLeftAlone() {
         val config = parseAwgConf(
-            minimal.replace("[200:4825:fd69:6d41:5475:a08a:8885:9542]:51820", "1.2.3.4:51820"))
+            minimal.replace("[200:1111:2222:3333:4444:5555:6666:7777]:51820", "1.2.3.4:51820"))
         assertEquals("1.2.3.4:51820", config.endpoint)
     }
 
@@ -83,7 +83,7 @@ class AwgConfigTest {
             PublicKey = ${"C".repeat(43)}=
             Endpoint = 9.9.9.9:9999
         """.trimIndent())
-        assertEquals("[200:4825:fd69:6d41:5475:a08a:8885:9542]:51820", config.endpoint)
+        assertEquals("[200:1111:2222:3333:4444:5555:6666:7777]:51820", config.endpoint)
     }
 
     @Test

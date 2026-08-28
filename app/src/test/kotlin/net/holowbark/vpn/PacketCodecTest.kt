@@ -122,10 +122,10 @@ class PacketCodecTest {
 
     @Test
     fun parseIpv6Bytes_acceptsBracketedBareAndSchemedForms() {
-        val expected = InetAddress.getByName("200:4825:fd69::1").address
-        assertArrayEquals(expected, parseIpv6Bytes("[200:4825:fd69::1]:44555"))
-        assertArrayEquals(expected, parseIpv6Bytes("200:4825:fd69::1"))
-        assertArrayEquals(expected, parseIpv6Bytes("quic://[200:4825:fd69::1]:65535"))
+        val expected = InetAddress.getByName("200:1111:2222::1").address
+        assertArrayEquals(expected, parseIpv6Bytes("[200:1111:2222::1]:44555"))
+        assertArrayEquals(expected, parseIpv6Bytes("200:1111:2222::1"))
+        assertArrayEquals(expected, parseIpv6Bytes("quic://[200:1111:2222::1]:65535"))
     }
 
     @Test
