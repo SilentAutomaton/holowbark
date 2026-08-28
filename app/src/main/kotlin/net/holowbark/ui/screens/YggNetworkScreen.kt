@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Refresh
@@ -28,18 +29,26 @@ import net.holowbark.ui.latencyColor
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun YggNetworkScreen(vm: TunnelViewModel) {
+fun YggNetworkScreen(vm: TunnelViewModel, onBack: () -> Unit) {
     val selfAddr      by YggNetworkState.selfAddress.collectAsState()
     val peers         by YggNetworkState.peers.collectAsState()
     val pingMs        by YggNetworkState.pingMs.collectAsState()
     val pinging       by YggNetworkState.pinging.collectAsState()
     val awgConf       by vm.awgConfig.collectAsState()
     val yggDnsEnabled by vm.yggDnsEnabled.collectAsState()
+    val multicastEnabled by vm.multicastEnabled.collectAsState()
     val ctx           = LocalContext.current
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("Yggdrasil Network") })
+            TopAppBar(
+                title = { Text("Network") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+            )
         }
     ) { padding ->
         LazyColumn(
@@ -166,6 +175,34 @@ fun YggNetworkScreen(vm: TunnelViewModel) {
                     }
                 }
             }
+
+            item {
+                SectionCard(title = "Local network discovery") {
+                    Column(modifier = Modifier.padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                "Find Yggdrasil nodes on this Wi-Fi directly. Off by default: it announces this device to the local network.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Switch(checked = multicastEnabled,
+                                onCheckedChange = { vm.toggleMulticast() })
+                        }
+                        if (multicastEnabled) {
+                            Text("Takes effect on next connect.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline)
+                        }
+                    }
+                }
+            }
+
 
             val sortedPeers = peers.sortedByDescending { it.up }
             item {

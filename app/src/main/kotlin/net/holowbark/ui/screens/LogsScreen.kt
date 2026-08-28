@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.*
@@ -18,7 +19,7 @@ import net.holowbark.ui.copyToClipboard
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LogsScreen() {
+fun LogsScreen(onBack: () -> Unit) {
     val lines by AppLogger.lines.collectAsState()
     val listState = rememberLazyListState()
     val ctx = LocalContext.current
@@ -32,6 +33,11 @@ fun LogsScreen() {
         topBar = {
             TopAppBar(
                 title = { Text("Logs") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
                 actions = {
                     IconButton(onClick = {
                         ctx.copyToClipboard("Holowbark logs", lines.joinToString("\n") {

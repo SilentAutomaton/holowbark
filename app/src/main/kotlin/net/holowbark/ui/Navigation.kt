@@ -1,25 +1,17 @@
 package net.holowbark.ui
 
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Lan
-import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.navigation.NavHostController
-import androidx.navigation.compose.*
+import androidx.compose.runtime.Composable
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import net.holowbark.ui.screens.*
 import java.net.URLDecoder
 import java.net.URLEncoder
 
 private object Routes {
-    const val HOME      = "home"
-    const val IMPORT    = "import"
+    const val CONNECT   = "connect"
+    const val SETTINGS  = "settings"
+    const val SERVER    = "server"
     const val SELECTED  = "selected"
     const val COUNTRIES = "countries"
     const val PEERS     = "peers/{countryKey}"
@@ -28,107 +20,59 @@ private object Routes {
     fun peers(key: String) = "peers/${URLEncoder.encode(key, "UTF-8")}"
 }
 
+/**
+ * One screen the app opens on, and a settings stack behind it. There is no tab bar:
+ * connecting is the only thing most sessions do, and everything else is reached by
+ * going deeper and coming back.
+ */
 @Composable
-fun AppNavHost(
-    vm: TunnelViewModel,
-    onRequestVpnPermission: () -> Unit,
-) {
-    val navController = rememberNavController()
-    val currentRoute  = navController.currentBackStackEntryAsState().value?.destination?.route
-    val awgConfig     by vm.awgConfig.collectAsState()
-    val confTabLabel  = if (awgConfig?.isAwg == true) "AWG" else "WG"   // the tab is narrow
+fun AppNavHost(vm: TunnelViewModel, onRequestVpnPermission: () -> Unit) {
+    val nav = rememberNavController()
 
-    Scaffold(
-        bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = currentRoute == Routes.HOME,
-                    onClick  = { navController.popBackStack(Routes.HOME, inclusive = false) },
-                    icon     = { Icon(Icons.Default.Home, "Home") },
-                    label    = { Text("Home") },
-                )
-                NavigationBarItem(
-                    selected = currentRoute == Routes.COUNTRIES,
-                    onClick  = { navController.navigateSingleTop(Routes.SELECTED) },
-                    icon     = { Icon(Icons.Default.Language, "Peers") },
-                    label    = { Text("Peers") },
-                )
-                NavigationBarItem(
-                    selected = currentRoute == Routes.NETWORK,
-                    onClick  = { navController.navigateSingleTop(Routes.NETWORK) },
-                    icon     = { Icon(Icons.Default.Lan, "Network") },
-                    label    = { Text("Network") },
-                )
-                NavigationBarItem(
-                    selected = currentRoute == Routes.IMPORT,
-                    onClick  = { navController.navigateSingleTop(Routes.IMPORT) },
-                    icon     = { Icon(Icons.Default.Settings, "$confTabLabel Config") },
-                    label    = { Text(confTabLabel) },
-                )
-                NavigationBarItem(
-                    selected = currentRoute == Routes.LOGS,
-                    onClick  = { navController.navigateSingleTop(Routes.LOGS) },
-                    icon     = { Icon(Icons.Default.Terminal, "Logs") },
-                    label    = { Text("Logs") },
-                )
-            }
+    NavHost(navController = nav, startDestination = Routes.CONNECT) {
+        composable(Routes.CONNECT) {
+            ConnectScreen(
+                vm = vm,
+                onRequestVpnPermission = onRequestVpnPermission,
+                onOpenSettings = { nav.navigate(Routes.SETTINGS) },
+            )
         }
-    ) { padding ->
-        NavHost(
-            navController = navController,
-            startDestination = Routes.HOME,
-            modifier = Modifier.fillMaxSize().padding(padding),
-        ) {
-            composable(Routes.HOME) {
-                HomeScreen(
-                    vm = vm,
-                    onRequestVpnPermission = onRequestVpnPermission,
-                    onNavigateImport    = { navController.navigate(Routes.IMPORT) },
-                    onNavigateCountries = { navController.navigate(Routes.SELECTED) },
-                    onRestartAwg        = vm::restartAwg,
-                )
-            }
-            composable(Routes.IMPORT) {
-                ImportScreen(vm = vm, onImported = { navController.popBackStack() })
-            }
-            composable(Routes.SELECTED) {
-                SelectedPeersScreen(
-                    vm = vm,
-                    onBrowsePublic = { navController.navigate(Routes.COUNTRIES) },
-                    onBack = { navController.popBackStack() },
-                )
-            }
-            composable(Routes.COUNTRIES) {
-                CountryBrowserScreen(
-                    vm = vm,
-                    onCountrySelected = { key ->
-                        navController.navigate(Routes.peers(key))
-                    }
-                )
-            }
-            composable(Routes.NETWORK) {
-                YggNetworkScreen(vm = vm)
-            }
-            composable(Routes.LOGS) {
-                LogsScreen()
-            }
-            composable(Routes.PEERS) { backStack ->
-                val rawKey = backStack.arguments?.getString("countryKey") ?: ""
-                val key    = URLDecoder.decode(rawKey, "UTF-8")
-                PeerListScreen(
-                    vm         = vm,
-                    countryKey = key,
-                    onBack     = { navController.popBackStack() },
-                )
-            }
+        composable(Routes.SETTINGS) {
+            SettingsScreen(
+                vm = vm,
+                onBack = { nav.popBackStack() },
+                onOpenServer = { nav.navigate(Routes.SERVER) },
+                onOpenPeers = { nav.navigate(Routes.SELECTED) },
+                onOpenNetwork = { nav.navigate(Routes.NETWORK) },
+                onOpenLogs = { nav.navigate(Routes.LOGS) },
+            )
         }
-    }
-}
-
-private fun NavHostController.navigateSingleTop(route: String) {
-    navigate(route) {
-        launchSingleTop = true
-        popUpTo(Routes.HOME) { saveState = true }
-        restoreState = true
+        composable(Routes.SERVER) {
+            ImportScreen(vm = vm, onImported = { nav.popBackStack() })
+        }
+        composable(Routes.SELECTED) {
+            SelectedPeersScreen(
+                vm = vm,
+                onBrowsePublic = { nav.navigate(Routes.COUNTRIES) },
+                onBack = { nav.popBackStack() },
+            )
+        }
+        composable(Routes.COUNTRIES) {
+            CountryBrowserScreen(
+                vm = vm,
+                onCountrySelected = { key -> nav.navigate(Routes.peers(key)) },
+                onBack = { nav.popBackStack() },
+            )
+        }
+        composable(Routes.PEERS) { backStack ->
+            val key = URLDecoder.decode(backStack.arguments?.getString("countryKey") ?: "", "UTF-8")
+            PeerListScreen(vm = vm, countryKey = key, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.NETWORK) {
+            YggNetworkScreen(vm = vm, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.LOGS) {
+            LogsScreen(onBack = { nav.popBackStack() })
+        }
     }
 }

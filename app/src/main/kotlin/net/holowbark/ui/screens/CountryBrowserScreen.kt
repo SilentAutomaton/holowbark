@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -19,6 +20,7 @@ import net.holowbark.ui.TunnelViewModel
 fun CountryBrowserScreen(
     vm: TunnelViewModel,
     onCountrySelected: (countryKey: String) -> Unit,
+    onBack: () -> Unit,
 ) {
     val countries  by vm.countries.collectAsState()
     val isLoading  by vm.isLoadingPeers.collectAsState()
@@ -26,7 +28,12 @@ fun CountryBrowserScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Public Peers") },
+                title = { Text("Public peers") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
                 actions = {
                     IconButton(onClick = { vm.refreshCountries(force = true) }) {
                         Icon(Icons.Default.Refresh, "Refresh")
