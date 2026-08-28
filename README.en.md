@@ -2,76 +2,79 @@
 
 [Русский](README.md)
 
-Android app for connecting to [WireGuard](https://www.wireguard.com/) VPN through the [Yggdrasil](https://yggdrasil-network.github.io/) overlay network. No root required.
+An Android WireGuard client that reaches its server through the
+[Yggdrasil](https://yggdrasil-network.github.io/) overlay network instead of the
+open internet. No root required.
 
-> **Always-On VPN**: the app does not work correctly in this mode. Make sure it is disabled: Settings → Network → VPN → Holowbark → ⚙.
+The point is a server with **no reachable port**. Its WireGuard port is firewalled
+off from the public internet, and the only way in is its Yggdrasil address — an
+address that exists only inside the mesh. There is nothing on a public IP to scan,
+fingerprint, or block.
 
-Pre-built APKs are available in [Releases](https://github.com/SilentAutomaton/holowbark/releases).
+Pre-built APKs are in [Releases](https://github.com/SilentAutomaton/holowbark/releases).
+
+## How a packet travels
+
+```
+  your app
+     │
+     ▼
+  TUN interface  ──────────────────────────────────────┐
+     │                                                 │
+     │ destination in 200::/7?                         │ everything else
+     ▼                                                 ▼
+  Yggdrasil overlay                            WireGuard / AmneziaWG
+     │                                                 │
+     │                            encrypted WG frames ─┘
+     │                                     │
+     │  wrapped in IPv6/UDP and sent ◄─────┘
+     ▼
+  physical network → mesh → your server
+```
+
+Two tunnels are stacked. WireGuard encrypts your traffic as usual, but it has no
+socket of its own: its protocol frames are handed back to the app, wrapped in an
+IPv6 UDP datagram addressed to the server's overlay address, and carried by
+Yggdrasil. Traffic already destined for the overlay skips WireGuard entirely.
+
+Yggdrasil's own peer addresses are excluded from the tunnel routes when it starts,
+so the transport that carries the tunnel does not run through it.
+
+## Status and limitations
+
+- **Always-On VPN is not supported.** Turn it off:
+  Settings → Network → VPN → Holowbark → ⚙. The app cannot establish the overlay
+  when Android holds the tunnel open before it starts.
+- **AmneziaWG obfuscation parameters are parsed and passed through, but untested.**
+  Plain WireGuard configs are the tested path.
+- Android 8.0 (API 26) and later. Below API 33 the peer exclusions are expressed as
+  split routes, which is slower to set up but works the same.
+- The tunnel is only as reachable as the overlay: with no connected Yggdrasil
+  peers, nothing connects. Ten or more peers is a reasonable starting point.
 
 ## Quick start
 
-1. On the **WG** tab, import your WireGuard `.conf` file. If you don't have a server yet — set one up using the instructions below.
-2. On the **Peers** tab, select the country closest to your device and add at least 10 peers — the more you add, the more resilient the overlay.
-3. Go back to the home screen and tap **Connect**.
+1. On the **WG** tab, import your WireGuard `.conf` file. If you do not have a
+   server yet, set one up with the instructions below.
+2. On the **Peers** tab, pick the country closest to you and add at least ten
+   peers. More peers means a more resilient overlay.
+3. Return to the home screen and tap **Connect**.
 
-## Build
-
-### Requirements
-
-| Tool | Version |
-|---|---|
-| Go | 1.21+ |
-| gomobile | latest (`go install golang.org/x/mobile/cmd/gomobile@latest`) |
-| Android SDK | platform-35, build-tools-35 |
-| Android NDK | r27 (`ndk;27.2.12479018`) |
-| Java | 17+ |
-
-### Build and install
-
-```bash
-make setup   # first-time setup: SDK components, gomobile, Go repo clones
-make all     # build holowbark.aar + debug APK
-make install # install to connected device
-```
-
-### Other targets
-
-```bash
-make aar            # build holowbark.aar (Yggdrasil + WireGuard/AmneziaWG via gomobile)
-make apk            # debug APK (requires aar)
-make apk-release    # unsigned release APK
-make install        # adb install debug APK
-make rebuild        # clean-aar + all (full rebuild from scratch)
-```
-
-Or directly via Gradle once `app/libs/holowbark.aar` exists:
-
-```bash
-./gradlew assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-
-### Go library (`holowbark.aar`)
-
-The AAR bundles Yggdrasil and AmneziaWG and is **not stored** in the repository — build it once with `make aar`. The gomobile entry point is `contrib/awgmobile/awgmobile.go`; `make clone-deps` copies it into the yggdrasil-go tree and adds the required Go dependencies.
-
-> AmneziaWG obfuscation parameters are supported but untested.
-
-## Features
-
-- WireGuard tunneling over the Yggdrasil overlay — traffic travels through the mesh network, bypassing the open internet
-- Built-in browser for public Yggdrasil peers, filterable by country
-- Optional Yggdrasil network DNS servers: support for `.ygg` domains and ad blocking
-
----
+The home screen shows each layer separately. Yggdrasil comes up first and reports
+its overlay address and peer count; the WireGuard layer follows once the server
+answers a ping through the mesh. If the second layer stalls, **Restart** retries it
+without tearing down the overlay.
 
 ## Server setup — manual
 
-A WireGuard server reachable **only through the Yggdrasil overlay**. The UDP port is closed from the public internet — the server's Yggdrasil address is the sole endpoint.
+A WireGuard server reachable only through the overlay. Its UDP port is closed to
+the public internet, and its Yggdrasil address is the sole entry point.
 
 ### 1. Yggdrasil
 
-[yggdrasil-network/yggdrasil-go](https://github.com/yggdrasil-network/yggdrasil-go) — packages at [yggdrasil-network.github.io/installation](https://yggdrasil-network.github.io/installation.html).
+Packages for every platform are at
+[yggdrasil-network.github.io/installation](https://yggdrasil-network.github.io/installation.html).
+On Debian or Ubuntu:
 
 ```bash
 curl -o /etc/apt/trusted.gpg.d/yggdrasil.gpg \
@@ -83,7 +86,9 @@ yggdrasil -genconf > /etc/yggdrasil/yggdrasil.conf
 systemctl enable --now yggdrasil
 ```
 
-Add public peers to the `Peers` array in `/etc/yggdrasil/yggdrasil.conf` — list at [publicpeers.neilalexander.dev](https://publicpeers.neilalexander.dev/). Get the server's overlay address:
+Add several public peers to the `Peers` array in `/etc/yggdrasil/yggdrasil.conf` —
+the list is at [publicpeers.neilalexander.dev](https://publicpeers.neilalexander.dev/).
+Then read the server's overlay address:
 
 ```bash
 yggdrasilctl getSelf | grep '"address"'
@@ -99,16 +104,19 @@ echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.d/99-forward.conf
 sysctl -p /etc/sysctl.d/99-forward.conf
 ```
 
-Generate keys:
+### 3. Keys
 
 ```bash
 SERVER_PRIV=$(wg genkey); SERVER_PUB=$(echo "$SERVER_PRIV" | wg pubkey)
 CLIENT_PRIV=$(wg genkey); CLIENT_PUB=$(echo "$CLIENT_PRIV" | wg pubkey)
+echo "Server public: $SERVER_PUB"
+echo "Client public: $CLIENT_PUB"
 ```
 
-Find the outbound interface: `ip route | awk '/^default/{print $5}'`
+### 4. Server config
 
-Create `/etc/wireguard/wg0.conf`:
+Find the outbound interface with `ip route | awk '/^default/{print $5}'`, then
+create `/etc/wireguard/wg0.conf`:
 
 ```ini
 [Interface]
@@ -120,7 +128,7 @@ PrivateKey = <SERVER_PRIV>
 PostUp  = iptables -t nat -A POSTROUTING -s 10.100.0.0/24 -o eth0 -j MASQUERADE
 PreDown = iptables -t nat -D POSTROUTING -s 10.100.0.0/24 -o eth0 -j MASQUERADE
 
-# Block WireGuard port: IPv4 fully, IPv6 except from Yggdrasil
+# Close the port to the internet: IPv4 entirely, IPv6 except from Yggdrasil
 PostUp  = iptables  -I INPUT -p udp --dport 51820 -j DROP; \
           ip6tables -I INPUT -p udp --dport 51820 ! -s 200::/7 -j DROP
 PreDown = iptables  -D INPUT -p udp --dport 51820 -j DROP; \
@@ -135,7 +143,7 @@ AllowedIPs = 10.100.0.2/32
 systemctl enable --now wg-quick@wg0
 ```
 
-### 3. Client `.conf` for Holowbark
+### 5. Client config for Holowbark
 
 ```ini
 [Interface]
@@ -150,50 +158,141 @@ AllowedIPs          = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 ```
 
-Set `Endpoint` to the server's Yggdrasil address from step 1. Import the file via the WG tab in the app.
-
----
+`Endpoint` must be the server's Yggdrasil address from step 1 — that address is
+what tells the app to route the tunnel over the overlay. Import the file on the WG
+tab.
 
 ## Server setup — wg-easy (Docker)
 
-[wg-easy](https://github.com/wg-easy/wg-easy) — WireGuard web UI.
-
-Follow the [official installation guide](https://wg-easy.github.io/wg-easy/latest/getting-started/). The only change for Holowbark: set `WG_HOST` to the **server's Yggdrasil address** (not the public IP):
+[wg-easy](https://github.com/wg-easy/wg-easy) is a web interface for managing
+WireGuard. Follow its
+[installation guide](https://wg-easy.github.io/wg-easy/latest/getting-started/).
+The only change for Holowbark is `WG_HOST`: use the server's Yggdrasil address
+rather than its public IP.
 
 ```
 WG_HOST=[200:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx]
 ```
 
-All client configs created through the interface will automatically contain the correct `Endpoint`. Download the `.conf` and import it into Holowbark via the WG tab.
+Every client config the interface generates then carries the correct `Endpoint`.
+Download the `.conf` and import it on the WG tab.
 
-After initial setup, lock down the ports from the public internet:
+Once setup is finished, close both ports to the public internet:
 
 ```bash
-# WireGuard: block IPv4 fully, IPv6 except from Yggdrasil
+# WireGuard: IPv4 entirely, IPv6 except from Yggdrasil
 iptables  -I INPUT -p udp --dport 51820 -j DROP
 ip6tables -I INPUT -p udp --dport 51820 ! -s 200::/7 -j DROP
 
-# Web UI: same
+# Web interface: the same
 iptables  -I INPUT -p tcp --dport 51821 -j DROP
 ip6tables -I INPUT -p tcp --dport 51821 ! -s 200::/7 -j DROP
 
 apt install iptables-persistent -y && netfilter-persistent save
 ```
 
-After closing port 51821, the web UI is accessible from within Yggdrasil at `http://[200:xxxx:...]:51821`, or via SSH tunnel:
+The web interface then stays reachable from inside the overlay at
+`http://[200:xxxx:...]:51821`, or through an SSH tunnel:
 
 ```bash
 ssh -L 51821:localhost:51821 user@<server>
 # then open http://localhost:51821
 ```
 
----
+## Build
 
-## Packet routing
+| Tool | Version |
+|---|---|
+| Go | 1.21 or later |
+| gomobile | latest, installed with `go install golang.org/x/mobile/cmd/gomobile@latest` |
+| Android SDK | platform-35, build-tools-35 |
+| Android NDK | r27 (`ndk;27.2.12479018`) |
+| Java | 17 or later |
+
+```bash
+make setup    # first time: SDK components, gomobile, Go repository clones
+make all      # holowbark.aar + debug APK
+make install  # adb install to a connected device
+```
+
+Other targets:
+
+```bash
+make aar          # holowbark.aar only
+make apk          # debug APK (needs the aar)
+make apk-release  # unsigned release APK
+make rebuild      # clean-aar + all
+```
+
+With `app/libs/holowbark.aar` already built, Gradle works directly:
+
+```bash
+./gradlew assembleDebug
+./gradlew test              # unit tests, no device needed
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+### The Go library
+
+`holowbark.aar` bundles Yggdrasil and AmneziaWG in one archive — separate archives
+would each carry their own copy of the gomobile `go.Seq` runtime and collide. It is
+about 49 MB and is **not committed**; build it once with `make aar`.
+
+The gomobile entry point is `contrib/awgmobile/awgmobile.go`, the one Go file this
+repository owns. `make clone-deps` copies it into a yggdrasil-go checkout and adds
+the dependencies it needs, because it has to compile inside that module.
+
+## Architecture
+
+```
+app/src/main/kotlin/net/holowbark/
+├── vpn/      the tunnel: service, both managers, router, codec, DNS proxy
+├── peers/    the public peer list — fetch, cache, parse
+├── config/   WireGuard/AmneziaWG .conf parsing
+└── ui/       Compose screens, navigation, view model
+```
+
+The whole Kotlin↔Go boundary is two files. `YggdrasilManager` wraps
+`mobile.Yggdrasil` and `AwgManager` wraps `awgmobile.Backend`; nothing else touches
+a native class, which is what keeps the rest of the code testable off-device.
+
+`contrib/awgmobile/awgmobile.go` is what makes the stacking possible. It gives
+AmneziaWG a channel-backed TUN and a channel-backed socket bind in place of the
+real ones, so WireGuard's plaintext and its encrypted frames both surface in Kotlin
+rather than going to the kernel — leaving the app free to route the frames over the
+overlay.
+
+Routing at the TUN:
 
 | Destination | Path |
 |---|---|
-| `200::/7` (Yggdrasil overlay) | directly through Yggdrasil |
-| Everything else | through the WireGuard tunnel |
+| `200::/7` (the overlay) | straight to Yggdrasil |
+| `198.18.0.53:53` | the split-DNS proxy, when overlay DNS is enabled |
+| everything else | the WireGuard tunnel |
 
-Yggdrasil peer IPs are resolved at VPN start and excluded from tunnel routes — traffic to them goes directly to the physical network.
+Conventions for contributing are in [CODESTYLE.md](CODESTYLE.md).
+
+## Troubleshooting
+
+The **Logs** tab is the first place to look for all of these. It holds the last 500
+lines and copies to the clipboard.
+
+**Yggdrasil never leaves "Connecting".** No peer is answering. Add more peers on the
+Peers tab, and prefer ones geographically close to you. Public peers go down
+regularly, so a list that worked last month may be entirely dead.
+
+**Yggdrasil is up but the tunnel layer stays "Pinging server…".** The overlay works
+and your server is not answering on it. Check `systemctl status yggdrasil` on the
+server, confirm `yggdrasilctl getSelf` reports the address in your `Endpoint`, and
+confirm the WireGuard port is open to `200::/7` rather than closed to everything.
+
+**Connected, but nothing loads.** Usually DNS. If the config's `DNS` server is only
+reachable through the tunnel it may not answer; try `1.1.1.1`. If overlay DNS is on,
+turn it off on the Network tab to narrow the problem down.
+
+**`.ygg` names do not resolve.** Enable Yggdrasil DNS on the Network tab. It is off
+by default because it sends every lookup through the overlay resolvers.
+
+**It worked, then stopped after the screen was off for a while.** Exempt Holowbark
+from battery optimisation. Android suspends the process otherwise, and the overlay
+peers time out.

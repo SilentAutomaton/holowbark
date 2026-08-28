@@ -2,81 +2,82 @@
 
 [English](README.en.md)
 
-Android-приложение для подключения к [WireGuard](https://www.wireguard.com/) VPN через оверлейную сеть [Yggdrasil](https://yggdrasil-network.github.io/) без root-прав.
+Android-клиент WireGuard, который соединяется со своим сервером через оверлейную
+сеть [Yggdrasil](https://yggdrasil-network.github.io/), а не через открытый
+интернет. Права root не нужны.
 
-> **Always-On VPN**: в этом режиме приложение не работает из-за особенностей реализации. Убедитесь, что он отключён.
+Смысл в сервере, **у которого нет доступного порта**. Порт WireGuard закрыт
+межсетевым экраном от публичного интернета, и единственный вход — адрес сервера
+в сети Yggdrasil, то есть адрес, существующий только внутри mesh-сети. На
+публичном IP-адресе нечего сканировать, распознавать и блокировать.
 
-Готовые APK — в разделе [Releases](https://github.com/SilentAutomaton/holowbark/releases).
+Готовые APK-файлы — в разделе [Releases](https://github.com/SilentAutomaton/holowbark/releases).
+
+## Путь пакета
+
+```
+  ваше приложение
+     │
+     ▼
+  интерфейс TUN  ──────────────────────────────────────┐
+     │                                                 │
+     │ адрес назначения в 200::/7?                     │ всё остальное
+     ▼                                                 ▼
+  оверлей Yggdrasil                            WireGuard / AmneziaWG
+     │                                                 │
+     │                   зашифрованные кадры WireGuard ┘
+     │                                     │
+     │  упакованы в IPv6/UDP и ◄───────────┘
+     │  отправлены в оверлей
+     ▼
+  физическая сеть → mesh-сеть → ваш сервер
+```
+
+Здесь два туннеля один поверх другого. WireGuard шифрует трафик обычным образом,
+но у него нет собственного сокета: его протокольные кадры возвращаются
+в приложение, упаковываются в дейтаграмму IPv6 UDP с адресом сервера в оверлее
+и передаются через Yggdrasil. Трафик, который и так адресован в оверлей, минует
+WireGuard полностью.
+
+Адреса собственных пиров Yggdrasil исключаются из маршрутов туннеля при запуске,
+чтобы транспорт, который несёт туннель, сам не шёл через этот туннель.
+
+## Состояние и ограничения
+
+- **Режим Always-On VPN не поддерживается.** Его нужно отключить:
+  Настройки → Сеть → VPN → Holowbark → ⚙. Приложение не может установить связь
+  с оверлеем, если Android удерживает туннель открытым ещё до его запуска.
+- **Параметры обфускации AmneziaWG разбираются и передаются дальше, но не
+  протестированы.** Проверенный вариант — обычные конфигурации WireGuard.
+- Android 8.0 (API 26) и новее. До API 33 исключения пиров задаются разделением
+  маршрутов: это дольше настраивается, но работает так же.
+- Туннель доступен ровно настолько, насколько доступен оверлей. Без подключённых
+  пиров Yggdrasil соединения не будет. Разумное начальное количество — десять
+  пиров и больше.
 
 ## Быстрый старт
 
-1. На вкладке **WG** импортируйте `.conf`-файл WireGuard. Если сервера ещё нет — настройте его по инструкции ниже.
-2. На вкладке **Peers** выберите страну, ближайшую к вашему устройству, и добавьте не менее 10 пиров — чем больше, тем устойчивее оверлей.
+1. На вкладке **WG** импортируйте файл `.conf` от WireGuard. Если сервера ещё нет,
+   настройте его по инструкции ниже.
+2. На вкладке **Peers** выберите страну, ближайшую к вам, и добавьте не менее
+   десяти пиров. Чем их больше, тем устойчивее оверлей.
 3. Вернитесь на главный экран и нажмите **Connect**.
 
-## Сборка
+Главный экран показывает каждый слой отдельно. Сначала поднимается Yggdrasil
+и сообщает свой адрес в оверлее и количество пиров; слой WireGuard подключается
+после того, как сервер ответит на проверочный пакет через mesh-сеть. Если второй
+слой останавливается, кнопка **Restart** перезапускает его, не разрывая оверлей.
 
-### Зависимости
+## Настройка сервера вручную
 
-| Инструмент | Версия |
-|---|---|
-| Go | 1.21+ |
-| gomobile | latest (`go install golang.org/x/mobile/cmd/gomobile@latest`) |
-| Android SDK | platform-35, build-tools-35 |
-| Android NDK | r27 (`ndk;27.2.12479018`) |
-| Java | 17+ |
+Сервер WireGuard, доступный только через оверлей. Его порт UDP закрыт от
+публичного интернета, и единственная точка входа — его адрес в сети Yggdrasil.
 
-### Сборка и установка
+### 1. Yggdrasil
 
-```bash
-# Первоначальная настройка: SDK-компоненты, gomobile, клонирование Go-репозиториев
-make setup
-
-# Сборка Go AAR + debug APK
-make all
-
-# Установка на подключённое устройство
-make install
-```
-
-### Отдельные цели
-
-```bash
-make aar            # сборка holowbark.aar (Yggdrasil + AmneziaWG через gomobile)
-make apk            # debug APK (требует aar)
-make apk-release    # unsigned release APK
-make install        # adb install debug APK
-make rebuild        # clean-aar + all (полная пересборка с нуля)
-```
-
-Если `app/libs/holowbark.aar` уже собран, можно использовать Gradle напрямую:
-
-```bash
-./gradlew assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-
-### Go-библиотека (`holowbark.aar`)
-
-AAR объединяет Yggdrasil и AmneziaWG и **не хранится** в репозитории — его нужно собрать один раз командой `make aar`. Точка входа для gomobile — `contrib/awgmobile/awgmobile.go`; `make clone-deps` копирует её в дерево yggdrasil-go и прописывает нужные Go-зависимости.
-
-> Параметры обфускации AmneziaWG поддерживаются, но не тестировались.
-
-## Возможности
-
-- Туннелирование WireGuard через оверлей Yggdrasil — трафик идёт через mesh-сеть, минуя открытый интернет
-- Встроенный браузер публичных пиров Yggdrasil с фильтрацией по странам
-- Опциональные DNS-серверы сети Yggdrasil: поддержка `.ygg`-доменов и блокировка рекламы
-
----
-
-## Настройка сервера — вручную
-
-Сервер WireGuard, доступный **только через оверлей Yggdrasil**: UDP-порт закрыт от публичного интернета, единственная точка входа — Yggdrasil-адрес сервера.
-
-### 1. Установка Yggdrasil
-
-Пакеты для всех платформ — на [yggdrasil-network.github.io/installation](https://yggdrasil-network.github.io/installation.html). Для Debian/Ubuntu:
+Пакеты для всех платформ находятся на странице
+[yggdrasil-network.github.io/installation](https://yggdrasil-network.github.io/installation.html).
+Для Debian и Ubuntu:
 
 ```bash
 curl -o /etc/apt/trusted.gpg.d/yggdrasil.gpg \
@@ -84,52 +85,42 @@ curl -o /etc/apt/trusted.gpg.d/yggdrasil.gpg \
 echo "deb https://neilalexander.s3.eu-west-2.amazonaws.com/deb/ debian yggdrasil" \
   > /etc/apt/sources.list.d/yggdrasil.list
 apt update && apt install yggdrasil
-```
-
-Сгенерировать конфиг и запустить:
-
-```bash
 yggdrasil -genconf > /etc/yggdrasil/yggdrasil.conf
 systemctl enable --now yggdrasil
 ```
 
-Добавить несколько публичных пиров в массив `Peers` в `/etc/yggdrasil/yggdrasil.conf` — список на [publicpeers.neilalexander.dev](https://publicpeers.neilalexander.dev/). Узнать Yggdrasil-адрес сервера:
+Добавьте несколько публичных пиров в массив `Peers` в файле
+`/etc/yggdrasil/yggdrasil.conf` — список находится на сайте
+[publicpeers.neilalexander.dev](https://publicpeers.neilalexander.dev/).
+Затем узнайте адрес сервера в оверлее:
 
 ```bash
 yggdrasilctl getSelf | grep '"address"'
 # "address": "200:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx"
 ```
 
-### 2. Установка WireGuard
+### 2. WireGuard
 
 ```bash
 apt install wireguard-tools
-```
-
-Включить IP-форвардинг:
-
-```bash
 echo "net.ipv4.ip_forward=1"          >> /etc/sysctl.d/99-forward.conf
 echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.d/99-forward.conf
 sysctl -p /etc/sysctl.d/99-forward.conf
 ```
 
-### 3. Генерация ключей
+### 3. Ключи
 
 ```bash
-SERVER_PRIV=$(wg genkey)
-SERVER_PUB=$(echo "$SERVER_PRIV" | wg pubkey)
-CLIENT_PRIV=$(wg genkey)
-CLIENT_PUB=$(echo "$CLIENT_PRIV" | wg pubkey)
-echo "Server pub: $SERVER_PUB"
-echo "Client pub: $CLIENT_PUB"
+SERVER_PRIV=$(wg genkey); SERVER_PUB=$(echo "$SERVER_PRIV" | wg pubkey)
+CLIENT_PRIV=$(wg genkey); CLIENT_PUB=$(echo "$CLIENT_PRIV" | wg pubkey)
+echo "Публичный ключ сервера: $SERVER_PUB"
+echo "Публичный ключ клиента: $CLIENT_PUB"
 ```
 
-### 4. Конфиг сервера
+### 4. Конфигурация сервера
 
-Имя внешнего интерфейса: `ip route | awk '/^default/ {print $5}'`
-
-Создать `/etc/wireguard/wg0.conf`:
+Определите внешний интерфейс командой `ip route | awk '/^default/{print $5}'`,
+затем создайте файл `/etc/wireguard/wg0.conf`:
 
 ```ini
 [Interface]
@@ -137,11 +128,11 @@ Address    = 10.100.0.1/24
 ListenPort = 51820
 PrivateKey = <SERVER_PRIV>
 
-# NAT-маскарадинг; заменить eth0 на свой внешний интерфейс
+# Преобразование адресов; замените eth0 на свой внешний интерфейс
 PostUp  = iptables -t nat -A POSTROUTING -s 10.100.0.0/24 -o eth0 -j MASQUERADE
 PreDown = iptables -t nat -D POSTROUTING -s 10.100.0.0/24 -o eth0 -j MASQUERADE
 
-# Закрыть порт от интернета: IPv4 — полностью, IPv6 — только не из Yggdrasil
+# Закрыть порт от интернета: IPv4 полностью, IPv6 кроме адресов из Yggdrasil
 PostUp  = iptables  -I INPUT -p udp --dport 51820 -j DROP; \
           ip6tables -I INPUT -p udp --dport 51820 ! -s 200::/7 -j DROP
 PreDown = iptables  -D INPUT -p udp --dport 51820 -j DROP; \
@@ -152,13 +143,11 @@ PublicKey  = <CLIENT_PUB>
 AllowedIPs = 10.100.0.2/32
 ```
 
-Запустить:
-
 ```bash
 systemctl enable --now wg-quick@wg0
 ```
 
-### 5. Клиентский `.conf` для Holowbark
+### 5. Конфигурация клиента для Holowbark
 
 ```ini
 [Interface]
@@ -173,52 +162,150 @@ AllowedIPs          = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 ```
 
-В поле `Endpoint` — Yggdrasil-адрес сервера из шага 1. Файл импортируется через вкладку WG в приложении.
-
----
+В поле `Endpoint` должен быть адрес сервера в сети Yggdrasil из шага 1 — именно
+этот адрес указывает приложению направить туннель через оверлей. Импортируйте файл
+на вкладке WG.
 
 ## Настройка сервера через wg-easy (Docker)
 
-[wg-easy](https://github.com/wg-easy/wg-easy) — веб-интерфейс для управления WireGuard.
-
-Для установки следуйте [официальному руководству](https://wg-easy.github.io/wg-easy/latest/getting-started/). Единственное отличие для Holowbark: в переменной `WG_HOST` нужно указать **Yggdrasil-адрес сервера**, а не публичный IP:
+[wg-easy](https://github.com/wg-easy/wg-easy) — это веб-интерфейс для управления
+WireGuard. Следуйте его
+[руководству по установке](https://wg-easy.github.io/wg-easy/latest/getting-started/).
+Единственное отличие для Holowbark — переменная `WG_HOST`: в ней нужно указать
+адрес сервера в сети Yggdrasil, а не публичный IP-адрес.
 
 ```
 WG_HOST=[200:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx]
 ```
 
-Все созданные через интерфейс клиентские конфиги будут автоматически содержать правильный `Endpoint`. Скачайте `.conf` и импортируйте его в Holowbark через вкладку WG.
+После этого каждая клиентская конфигурация, созданная через интерфейс, будет
+содержать правильное значение `Endpoint`. Скачайте файл `.conf` и импортируйте его
+на вкладке WG.
 
-После первоначальной настройки закройте оба порта от публичного интернета:
+Когда настройка завершена, закройте оба порта от публичного интернета:
 
 ```bash
-# WireGuard: IPv4 — полностью, IPv6 — только не из Yggdrasil
+# WireGuard: IPv4 полностью, IPv6 кроме адресов из Yggdrasil
 iptables  -I INPUT -p udp --dport 51820 -j DROP
 ip6tables -I INPUT -p udp --dport 51820 ! -s 200::/7 -j DROP
 
-# Веб-интерфейс: аналогично
+# Веб-интерфейс: точно так же
 iptables  -I INPUT -p tcp --dport 51821 -j DROP
 ip6tables -I INPUT -p tcp --dport 51821 ! -s 200::/7 -j DROP
 
-# Сохранить правила
-apt install iptables-persistent -y
-netfilter-persistent save
+apt install iptables-persistent -y && netfilter-persistent save
 ```
 
-Веб-интерфейс после этого доступен изнутри Yggdrasil по адресу `http://[200:xxxx:...]:51821` или через SSH-туннель:
+После этого веб-интерфейс остаётся доступным изнутри оверлея по адресу
+`http://[200:xxxx:...]:51821` или через туннель SSH:
 
 ```bash
 ssh -L 51821:localhost:51821 user@<сервер>
-# затем открыть http://localhost:51821
+# затем откройте http://localhost:51821
 ```
 
----
+## Сборка
 
-## Маршрутизация пакетов
-
-| Назначение | Путь |
+| Инструмент | Версия |
 |---|---|
-| `200::/7` (оверлей Yggdrasil) | напрямую через Yggdrasil |
-| Всё остальное | через WireGuard-туннель |
+| Go | 1.21 или новее |
+| gomobile | последняя, устанавливается командой `go install golang.org/x/mobile/cmd/gomobile@latest` |
+| Android SDK | platform-35, build-tools-35 |
+| Android NDK | r27 (`ndk;27.2.12479018`) |
+| Java | 17 или новее |
 
-Адреса пиров Yggdrasil определяются при запуске VPN и исключаются из туннельных маршрутов — трафик к ним идёт в физическую сеть напрямую.
+```bash
+make setup    # первый запуск: компоненты SDK, gomobile, клонирование репозиториев Go
+make all      # holowbark.aar и отладочный APK
+make install  # установка на подключённое устройство через adb
+```
+
+Остальные цели:
+
+```bash
+make aar          # только holowbark.aar
+make apk          # отладочный APK (нужен собранный aar)
+make apk-release  # неподписанный релизный APK
+make rebuild      # clean-aar и полная пересборка
+```
+
+Если файл `app/libs/holowbark.aar` уже собран, можно работать напрямую через
+Gradle:
+
+```bash
+./gradlew assembleDebug
+./gradlew test              # модульные тесты, устройство не нужно
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+### Библиотека на языке Go
+
+Файл `holowbark.aar` объединяет Yggdrasil и AmneziaWG в одном архиве: два
+отдельных архива несли бы каждый свою копию среды выполнения gomobile `go.Seq`
+и конфликтовали бы. Его размер около 49 МБ, и он **не хранится в репозитории** —
+соберите его один раз командой `make aar`.
+
+Точка входа для gomobile — файл `contrib/awgmobile/awgmobile.go`, единственный
+файл на языке Go, который принадлежит этому репозиторию. Команда
+`make clone-deps` копирует его в дерево исходников yggdrasil-go и добавляет
+нужные зависимости, потому что компилироваться он должен внутри того модуля.
+
+## Устройство приложения
+
+```
+app/src/main/kotlin/net/holowbark/
+├── vpn/      туннель: служба, оба менеджера, маршрутизатор, кодек пакетов, прокси DNS
+├── peers/    список публичных пиров — загрузка, кэш, разбор
+├── config/   разбор файлов .conf от WireGuard и AmneziaWG
+└── ui/       экраны Compose, навигация, модель представления
+```
+
+Вся граница между Kotlin и Go — это два файла. `YggdrasilManager` оборачивает
+`mobile.Yggdrasil`, а `AwgManager` оборачивает `awgmobile.Backend`; больше ни один
+файл не обращается к нативным классам, и именно это позволяет тестировать
+остальной код без устройства.
+
+Возможность соединить два туннеля даёт файл `contrib/awgmobile/awgmobile.go`.
+Он подставляет AmneziaWG вместо настоящего интерфейса TUN и настоящего сокета их
+аналоги на каналах, поэтому и открытый трафик WireGuard, и его зашифрованные
+кадры попадают в Kotlin, а не в ядро. Дальше приложение свободно направляет эти
+кадры через оверлей.
+
+Маршрутизация на интерфейсе TUN:
+
+| Адрес назначения | Путь |
+|---|---|
+| `200::/7` (оверлей) | напрямую в Yggdrasil |
+| `198.18.0.53:53` | разделяющий прокси DNS, если включён DNS оверлея |
+| всё остальное | туннель WireGuard |
+
+Правила оформления кода описаны в файле [CODESTYLE.md](CODESTYLE.md).
+
+## Устранение неполадок
+
+Во всех случаях начинать нужно с вкладки **Logs**. Она хранит последние 500 строк
+и копирует их в буфер обмена.
+
+**Yggdrasil не выходит из состояния «Connecting».** Ни один пир не отвечает.
+Добавьте больше пиров на вкладке Peers и предпочитайте географически близкие.
+Публичные пиры регулярно выходят из строя, поэтому список, работавший месяц
+назад, может быть полностью нерабочим.
+
+**Yggdrasil подключён, но слой туннеля остаётся в состоянии «Pinging server…».**
+Оверлей работает, а ваш сервер в нём не отвечает. Проверьте на сервере
+`systemctl status yggdrasil`, убедитесь, что команда `yggdrasilctl getSelf`
+выдаёт тот же адрес, который указан в поле `Endpoint`, и что порт WireGuard
+открыт для диапазона `200::/7`, а не закрыт для всех.
+
+**Соединение установлено, но ничего не открывается.** Обычно причина в DNS. Если
+сервер DNS из конфигурации доступен только через туннель, он может не отвечать —
+попробуйте `1.1.1.1`. Если включён DNS оверлея, отключите его на вкладке Network,
+чтобы сузить круг причин.
+
+**Имена в зоне `.ygg` не разрешаются.** Включите DNS сети Yggdrasil на вкладке
+Network. По умолчанию он выключен, потому что направляет все запросы через
+резолверы оверлея.
+
+**Работало, но перестало после того, как экран долго был выключен.** Отключите
+для Holowbark оптимизацию расхода батареи. Иначе Android приостанавливает процесс,
+и соединения с пирами оверлея разрываются по тайм-ауту.
