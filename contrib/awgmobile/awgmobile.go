@@ -34,7 +34,8 @@ type Backend struct {
 // Start creates an AmneziaWG device with a virtual (channel-backed) TUN and
 // a channel-backed UDP Bind (no real sockets — WG packets are bridged through
 // Yggdrasil by the Kotlin layer via RecvWGPacket / SendWGPacket).
-// settings is a UAPI config string. mtu is the interface MTU (use 1280).
+// settings is a UAPI config string. mtu must match the MTU of the platform TUN
+// the caller feeds packets from, or packets one side accepts the other drops.
 func (b *Backend) Start(settings string, mtu int) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

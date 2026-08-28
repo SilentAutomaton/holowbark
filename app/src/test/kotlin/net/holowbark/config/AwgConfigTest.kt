@@ -106,6 +106,21 @@ class AwgConfigTest {
     }
 
     @Test
+    fun effectiveMtu_fallsBackToTheDefaultWhenTheConfigIsSilent() {
+        // wg-quick lands on 1420 for a server whose client peer has no Endpoint,
+        // so an unset MTU here has to mean the same number.
+        assertEquals(1420, AwgConfig.DEFAULT_MTU)
+        assertEquals(AwgConfig.DEFAULT_MTU, parseAwgConf(minimal).effectiveMtu)
+    }
+
+    @Test
+    fun effectiveMtu_usesTheConfigValueWhenPresent() {
+        val config = parseAwgConf(minimal.replace("[Peer]", "MTU = 1280\n\n[Peer]"))
+        assertEquals(1280, config.mtu)
+        assertEquals(1280, config.effectiveMtu)
+    }
+
+    @Test
     fun toConfString_roundTripsThroughTheParser() {
         val original = parseAwgConf(minimal.replace("[Peer]", """
             DNS = 1.1.1.1

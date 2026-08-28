@@ -33,7 +33,6 @@ class AwgManager(
 ) {
     companion object {
         private const val TAG = "AwgManager"
-        private const val AWG_MTU = 1500L
     }
 
     @Volatile private var backend: Backend? = null
@@ -51,7 +50,7 @@ class AwgManager(
 
         val b = Backend()
         try {
-            b.start(settings, AWG_MTU)
+            b.start(settings, config.effectiveMtu.toLong())
             backend = b
             onStatusChange(LayerState.STARTING)   // UP only after first decrypted packet
             val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())

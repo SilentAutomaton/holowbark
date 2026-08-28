@@ -47,6 +47,18 @@ data class AwgConfig(
 
     /** The name shown to the user and written to logs for this config. */
     val protocolName: String get() = if (isAwg) "AmneziaWG" else "WireGuard"
+
+    /**
+     * The MTU both tunnel layers run at. wg-quick derives an unset MTU from the
+     * route to the endpoint minus 80, which on a normally configured server lands
+     * on [DEFAULT_MTU] — so matching that default is what keeps the two ends from
+     * disagreeing about how large a packet may be.
+     */
+    val effectiveMtu: Int get() = mtu ?: DEFAULT_MTU
+
+    companion object {
+        const val DEFAULT_MTU = 1420
+    }
 }
 
 class AwgConfigParseException(message: String) : Exception(message)

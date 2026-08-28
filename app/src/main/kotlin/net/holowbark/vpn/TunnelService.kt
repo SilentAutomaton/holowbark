@@ -41,7 +41,6 @@ class TunnelService : VpnService() {
     companion object {
         private const val TAG = "TunnelService"
         private const val NOTIF_ID = 1
-        private const val TUN_MTU = 1500
         private const val PEER_DNS_TIMEOUT_SECONDS = 3L
 
         /** True while the VPN is actually up in this process. Prefs alone can go
@@ -147,7 +146,8 @@ class TunnelService : VpnService() {
             AppLogger.w(TAG, "VPN already running — ignoring duplicate start")
             return
         }
-        AppLogger.i(TAG, "startVpn peers=${peers.size} awg=${awgConfig?.endpoint} multicast=$multicast")
+        AppLogger.i(TAG, "startVpn peers=${peers.size} awg=${awgConfig?.endpoint} " +
+            "mtu=${awgConfig?.effectiveMtu ?: AwgConfig.DEFAULT_MTU} multicast=$multicast")
         updateStatus {
             copy(
                 overall = VpnState.CONNECTING,
@@ -246,9 +246,12 @@ class TunnelService : VpnService() {
         preVpnDns: InetAddress?,
         yggMgr: YggdrasilManager,
     ): ParcelFileDescriptor? {
+        // Both layers must agree: a packet the Android TUN accepts but the AWG
+        // device will not is simply dropped, with nothing logged either side.
+        val mtu = awgConfig?.effectiveMtu ?: AwgConfig.DEFAULT_MTU
         val builder = Builder()
             .setSession(getString(R.string.app_name))
-            .setMtu(TUN_MTU)
+            .setMtu(mtu)
 
         // The WG client address from the config, e.g. "10.9.0.2/32".
         val clientAddress = awgConfig?.address

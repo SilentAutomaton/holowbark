@@ -123,6 +123,7 @@ create `/etc/wireguard/wg0.conf`:
 Address    = 10.100.0.1/24
 ListenPort = 51820
 PrivateKey = <SERVER_PRIV>
+MTU        = 1420
 
 # NAT; replace eth0 with your outbound interface
 PostUp  = iptables -t nat -A POSTROUTING -s 10.100.0.0/24 -o eth0 -j MASQUERADE
@@ -150,6 +151,7 @@ systemctl enable --now wg-quick@wg0
 PrivateKey = <CLIENT_PRIV>
 Address    = 10.100.0.2/24
 DNS        = 1.1.1.1
+MTU        = 1420
 
 [Peer]
 PublicKey           = <SERVER_PUB>
@@ -161,6 +163,12 @@ PersistentKeepalive = 25
 `Endpoint` must be the server's Yggdrasil address from step 1 — that address is
 what tells the app to route the tunnel over the overlay. Import the file on the WG
 tab.
+
+Set `MTU` on both ends rather than leaving it to be inferred. `wg-quick` derives an
+unset MTU from the route to the peer's endpoint, and a client whose endpoint is a
+`200::` address resolves that route over Yggdrasil's interface — whose MTU is 65535.
+A desktop `wg-quick` client therefore comes up at roughly 65455 unless told
+otherwise. Holowbark itself defaults to 1420 and honours whatever the `.conf` says.
 
 ## Server setup — wg-easy (Docker)
 
@@ -292,6 +300,11 @@ turn it off on the Network tab to narrow the problem down.
 
 **`.ygg` names do not resolve.** Enable Yggdrasil DNS on the Network tab. It is off
 by default because it sends every lookup through the overlay resolvers.
+
+**Small pages load, large downloads stall.** An MTU mismatch: one end is emitting
+packets the other will not accept, and nothing logs a drop. Set `MTU = 1420` on both
+the server and the client `.conf`. The connect log line reports the MTU the app is
+actually running at.
 
 **It worked, then stopped after the screen was off for a while.** Exempt Holowbark
 from battery optimisation. Android suspends the process otherwise, and the overlay
