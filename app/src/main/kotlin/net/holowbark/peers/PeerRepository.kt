@@ -83,7 +83,7 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
             val regionMap = regionMapCache ?: buildRegionMap().also { regionMapCache = it }
             AppLogger.d(TAG, "Region map: ${regionMap.size} files")
             val nodesText = fetchUrl(NODES_URL)
-            val peers = parseNodes(nodesText, regionMap)
+            val peers = parsePeerNodes(nodesText, regionMap)
             AppLogger.d(TAG, "Parsed ${peers.size} peers from ${peers.map { it.country }.toSet().size} countries")
             if (peers.isNotEmpty()) {
                 db.peerDao().deleteAll()
@@ -131,7 +131,7 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         val text = context.resources.openRawResource(R.raw.fallback_peers).use { inp ->
             inp.readBytes().toString(Charsets.UTF_8)
         }
-        return parseNodes(text, emptyMap())
+        return parsePeerNodes(text, emptyMap())
     }
 
     /**
@@ -159,46 +159,6 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
                 emptyMap()
             }
         }
-
-    internal fun parseNodes(nodesText: String, regionMap: Map<String, String>): List<Peer> {
-        val root = try {
-            json.parseToJsonElement(nodesText).jsonObject
-        } catch (e: Exception) {
-            AppLogger.e(TAG, "Failed to parse nodes JSON: $e")
-            return emptyList()
-        }
-
-        val now  = System.currentTimeMillis()
-        val peers = mutableListOf<Peer>()
-
-        for ((filename, peersEl) in root) {
-            if (!filename.endsWith(".md")) continue
-            val slug       = filename.removeSuffix(".md")
-            val region     = regionMap.getOrDefault(filename, "other")
-            val countryKey = "$region/$slug"
-
-            val peersMap = peersEl.jsonObject
-            for ((address, infoEl) in peersMap) {
-                val addr = address.trim()
-                val info = infoEl.jsonObject
-
-                val up         = info["up"]?.jsonPrimitive?.booleanOrNull ?: false
-                val responseMs = info["response_ms"]?.jsonPrimitive?.intOrNull
-                val lastSeen   = info["last_seen"]?.jsonPrimitive?.longOrNull?.let { it * 1000L }
-
-                peers += Peer(
-                    address    = addr,
-                    ip         = null,
-                    country    = countryKey,
-                    up         = up,
-                    responseMs = responseMs,
-                    lastSeen   = lastSeen,
-                    cachedAt   = now,
-                )
-            }
-        }
-        return peers
-    }
 
     private fun fetchUrl(url: String): String {
         val req = Request.Builder().url(url).build()

@@ -41,6 +41,11 @@ android {
         compose = true
     }
 
+    testOptions {
+        // AppLogger forwards to android.util.Log, which is a stub off-device.
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -84,5 +89,7 @@ dependencies {
     // Core
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
+
+    testImplementation("junit:junit:4.13.2")
     implementation("com.google.android.material:material:1.12.0")
 }
