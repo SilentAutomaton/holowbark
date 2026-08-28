@@ -1,6 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Holowbark</string>
+
     <string name="notif_channel_name">VPN Status</string>
     <string name="notif_channel_desc">Yggdrasil + AmneziaWG tunnel status</string>
+    <string name="notif_connecting">Connecting…</string>
+    <string name="notif_error">Error</string>
+    <string name="notif_disconnect">Disconnect</string>
+
+    <string name="tile_connected">Holowbark VPN connected</string>
+    <string name="tile_connecting">Holowbark VPN connecting</string>
+    <string name="tile_error">Holowbark VPN error</string>
+    <string name="tile_off">Holowbark VPN off</string>
+    <string name="tile_on_short">ON</string>
+    <string name="tile_off_short">OFF</string>
+    <string name="tile_error_short">ERROR</string>
+    <plurals name="tile_peers">
+        <item quantity="one">%d peer</item>
+        <item quantity="other">%d peers</item>
+    </plurals>
 </resources>

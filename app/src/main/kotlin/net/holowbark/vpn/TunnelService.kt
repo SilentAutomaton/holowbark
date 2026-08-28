@@ -32,7 +32,6 @@ import net.holowbark.R
 import net.holowbark.HolowbarkApp
 import net.holowbark.config.AwgConfig
 import net.holowbark.config.parseAwgConf
-import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
@@ -55,7 +54,7 @@ class TunnelService : VpnService() {
 
         // Extras for ACTION_START intent
         const val EXTRA_AWG_CONF   = "awg_conf"
-        const val EXTRA_YGG_PEERS  = "ygg_peers"      // ArrayList<String> of peer addresses
+        const val EXTRA_YGG_PEERS  = "peer_uris"      // ArrayList<String>
         const val EXTRA_YGG_KEY    = "ygg_key"
 
         // Community Yggdrasil DNS resolvers (Revertron). Support ICANN, ALFIS, OpenNIC, ad blocking.
@@ -67,6 +66,23 @@ class TunnelService : VpnService() {
             "308:c8:48:45::",   // Buffalo
         )
         const val EXTRA_MULTICAST  = "ygg_multicast"  // Boolean — enable LAN multicast discovery
+
+        fun startIntent(
+            context: Context,
+            peers: List<String>,
+            awgConf: String?,
+            yggKey: String,
+            multicast: Boolean = false,
+        ): Intent = Intent(context, TunnelService::class.java).apply {
+            action = ACTION_START
+            putStringArrayListExtra(EXTRA_YGG_PEERS, ArrayList(peers))
+            putExtra(EXTRA_AWG_CONF, awgConf)
+            putExtra(EXTRA_YGG_KEY, yggKey)
+            putExtra(EXTRA_MULTICAST, multicast)
+        }
+
+        fun stopIntent(context: Context): Intent =
+            Intent(context, TunnelService::class.java).setAction(ACTION_STOP)
     }
 
     private var tunFd: ParcelFileDescriptor? = null
@@ -82,7 +98,6 @@ class TunnelService : VpnService() {
     private var savedAwgServerAddrBytes: ByteArray? = null
     private var savedAwgServerPort: Int = 44555
 
-    private var savedPeers: List<String> = emptyList()
     private var netCallback: ConnectivityManager.NetworkCallback? = null
     private var screenReceiver: BroadcastReceiver? = null
     @Volatile private var lastNotifText = ""
@@ -112,8 +127,12 @@ class TunnelService : VpnService() {
         }
     }
 
-    override fun onRevoke() { stopVpn() }
-    override fun onDestroy() { stopVpn(); super.onDestroy() }
+    override fun onRevoke() = stopVpn()
+
+    override fun onDestroy() {
+        stopVpn()
+        super.onDestroy()
+    }
 
     // -------------------------------------------------------------------------
     // VPN start / stop
@@ -144,7 +163,7 @@ class TunnelService : VpnService() {
         // All callbacks use nullable vars (router?, awg?) so starting before those
         // are initialised is safe — packets are dropped until the router is ready,
         // which is fine during the brief setup window.
-        val awgServerAddrBytes = awgConfig?.let { parseYggAddrBytes(it.endpoint) }
+        val awgServerAddrBytes = awgConfig?.let { parseIpv6Bytes(it.endpoint) }
         val awgServerPort      = awgConfig?.let { parseEndpointPort(it.endpoint) } ?: 44555
 
         val awgMgr = AwgManager(
@@ -169,9 +188,6 @@ class TunnelService : VpnService() {
         }
         yggMgr.start(peers, yggKey, multicast)
 
-        // Persist peer list so network-change callback can trigger retries
-        savedPeers = peers
-
         // Reconnect Yggdrasil peers whenever the underlying physical network changes
         val cm = getSystemService(ConnectivityManager::class.java)
         val request = NetworkRequest.Builder()
@@ -181,14 +197,14 @@ class TunnelService : VpnService() {
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 AppLogger.i(TAG, "Physical network available — retrying Ygg peers")
-                ygg?.setPeers(savedPeers)
+                ygg?.retryPeers()
             }
             override fun onLost(network: Network) {
                 AppLogger.d(TAG, "Physical network lost")
             }
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
                 AppLogger.d(TAG, "Link properties changed — retrying Ygg peers")
-                ygg?.setPeers(savedPeers)
+                ygg?.retryPeers()
             }
         }
         cm.registerNetworkCallback(request, cb)
@@ -198,8 +214,8 @@ class TunnelService : VpnService() {
         val sr = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 when (intent.action) {
-                    Intent.ACTION_SCREEN_OFF -> ygg?.pollIntervalMs = 60_000L
-                    Intent.ACTION_SCREEN_ON  -> ygg?.pollIntervalMs = 30_000L
+                    Intent.ACTION_SCREEN_OFF -> ygg?.slowPolling = true
+                    Intent.ACTION_SCREEN_ON  -> ygg?.slowPolling = false
                 }
             }
         }
@@ -310,8 +326,7 @@ class TunnelService : VpnService() {
         val awgDnsServers = awgConfig?.dns?.split(",")
             ?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
 
-        val yggDnsEnabled = getSharedPreferences("holowbark", android.content.Context.MODE_PRIVATE)
-            .getBoolean("ygg_dns_enabled", false)
+        val yggDnsEnabled = Prefs.of(this).yggDnsEnabled
 
         if (yggDnsEnabled) {
             // Split-DNS proxy: .ygg queries → Yggdrasil resolver, others → AWG DNS or pre-VPN DNS
@@ -334,12 +349,15 @@ class TunnelService : VpnService() {
                 AppLogger.i(TAG, "Split DNS proxy enabled, upstream=$upstreamDns")
             } else {
                 AppLogger.w(TAG, "Ygg DNS resolver unavailable — using AWG DNS only")
-                awgDnsServers.forEach { runCatching { builder.addDnsServer(it) }.onFailure {} }
+                awgDnsServers.forEach { server ->
+                    runCatching { builder.addDnsServer(server) }
+                        .onFailure { AppLogger.w(TAG, "addDnsServer $server: $it") }
+                }
             }
         } else {
-            awgDnsServers.forEach {
-                runCatching { builder.addDnsServer(it) }
-                    .onFailure { AppLogger.w(TAG, "addDnsServer $it: $it") }
+            awgDnsServers.forEach { server ->
+                runCatching { builder.addDnsServer(server) }
+                    .onFailure { AppLogger.w(TAG, "addDnsServer $server: $it") }
             }
         }
         val fd = builder.establish() ?: run {
@@ -444,7 +462,7 @@ class TunnelService : VpnService() {
             val triggerJob = launch {
                 while (isActive) {
                     AppLogger.d(TAG, "AWG bridge: sending handshake trigger packet")
-                    awgMgr.writePacket(buildDummyIPv4())
+                    awgMgr.writePacket(buildHandshakeTrigger())
                     delay(3_000)
                 }
             }
@@ -457,8 +475,7 @@ class TunnelService : VpnService() {
                 }
                 if (wgPktCount == 0) triggerJob.cancel()   // handshake initiated — stop sending triggers
                 wgPktCount++
-                val ourAddrStr   = yggMgr.getAddress()
-                val ourAddrBytes = parseYggSelfAddr(ourAddrStr)
+                val ourAddrBytes = parseIpv6Bytes(yggMgr.getAddress())
                 if (ourAddrBytes == null) {
                     AppLogger.w(TAG, "AWG bridge: our Ygg address not available yet, skipping pkt #$wgPktCount")
                     continue
@@ -478,6 +495,9 @@ class TunnelService : VpnService() {
     }
 
     private fun stopVpn() {
+        // stopSelf() below re-enters here through onDestroy(); the guard makes the
+        // second pass a no-op.
+        if (!isRunning && tunFd == null) return
         AppLogger.i(TAG, "stopVpn")
         isRunning = false
         YggNetworkState.manager = null
@@ -486,7 +506,6 @@ class TunnelService : VpnService() {
         netCallback = null
         screenReceiver?.let { runCatching { unregisterReceiver(it) } }
         screenReceiver = null
-        savedPeers = emptyList()
         ygg?.dnsProxy = null
         dnsProxyInstance?.stop(); dnsProxyInstance = null
         awgLifecycleScope?.cancel(); awgLifecycleScope = null
@@ -515,10 +534,6 @@ class TunnelService : VpnService() {
         launchAwgLifecycle(config, awgMgr, yggMgr, addrBytes, savedAwgServerPort)
     }
 
-    fun updatePeers(newPeers: List<String>) {
-        ygg?.setPeers(newPeers)
-    }
-
     // -------------------------------------------------------------------------
     // Status helpers
     // -------------------------------------------------------------------------
@@ -539,32 +554,14 @@ class TunnelService : VpnService() {
 
     private fun broadcastStatus() {
         val s = status
-        getSharedPreferences("holowbark", android.content.Context.MODE_PRIVATE).edit()
-            .putString("vpn_state",    s.overall.name)
-            .putString("ygg_layer",    s.ygg.name)
-            .putString("ygg_address",  s.yggAddress)
-            .putInt   ("ygg_peers",    s.yggPeers)
-            .putString("awg_layer",    s.awg.name)
-            .apply()
-        sendBroadcast(Intent(ACTION_STATUS).apply {
-            setPackage(packageName)
-            putExtra(TunnelStatus.EXTRA_OVERALL,     s.overall.name)
-            putExtra(TunnelStatus.EXTRA_YGG,         s.ygg.name)
-            putExtra(TunnelStatus.EXTRA_YGG_ADDRESS, s.yggAddress)
-            putExtra(TunnelStatus.EXTRA_YGG_PEERS,   s.yggPeers)
-            putExtra(TunnelStatus.EXTRA_AWG,         s.awg.name)
-        })
-        // Re-post notification only when displayed text changes (saves battery by avoiding
-        // redundant notif updates on every 30s peer poll).
+        Prefs.of(this).saveTunnelStatus(s)
+        sendBroadcast(s.putInto(Intent(ACTION_STATUS).setPackage(packageName)))
+        // Re-post the notification only when its text changes, so a 30 s peer poll
+        // that reports the same numbers costs nothing.
         if (s.overall != VpnState.IDLE && s.overall != VpnState.DISCONNECTED) {
-            val notifText = when (s.overall) {
-                VpnState.CONNECTED  -> "Ygg: ${s.yggAddress} | peers: ${s.yggPeers}"
-                VpnState.CONNECTING -> "Connecting…"
-                VpnState.ERROR      -> "Error"
-                else                -> "Connecting…"
-            }
-            if (notifText != lastNotifText) {
-                lastNotifText = notifText
+            val text = notificationText(s)
+            if (text != lastNotifText) {
+                lastNotifText = text
                 val mgr = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
                 mgr.notify(NOTIF_ID, buildNotification(s))
             }
@@ -575,31 +572,29 @@ class TunnelService : VpnService() {
     // Notification
     // -------------------------------------------------------------------------
 
+    private fun notificationText(s: TunnelStatus): String = when (s.overall) {
+        VpnState.CONNECTED -> "Ygg: ${s.yggAddress} | peers: ${s.yggPeers}"
+        VpnState.ERROR     -> getString(R.string.notif_error)
+        else               -> getString(R.string.notif_connecting)
+    }
+
     private fun buildNotification(s: TunnelStatus): Notification {
-        val text = when (s.overall) {
-            VpnState.CONNECTED  -> "Ygg: ${s.yggAddress} | peers: ${s.yggPeers}"
-            VpnState.CONNECTING -> "Connecting…"
-            VpnState.ERROR      -> "Error"
-            else                -> "Connecting…"
-        }
         val openIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
         val stopIntent = PendingIntent.getService(
-            this, 1,
-            Intent(this, TunnelService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_IMMUTABLE,
+            this, 1, stopIntent(this), PendingIntent.FLAG_IMMUTABLE,
         )
         val builder = NotificationCompat.Builder(this, HolowbarkApp.VPN_NOTIF_CHANNEL)
-            .setContentTitle("Holowbark")
-            .setContentText(text)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(notificationText(s))
             .setSmallIcon(R.drawable.ic_vpn_key)
             .setContentIntent(openIntent)
             .setOngoing(true)
         if (s.overall == VpnState.CONNECTED || s.overall == VpnState.CONNECTING) {
-            builder.addAction(R.drawable.ic_vpn_key, "Disconnect", stopIntent)
+            builder.addAction(R.drawable.ic_vpn_key, getString(R.string.notif_disconnect), stopIntent)
         }
         return builder.build()
     }
@@ -637,7 +632,9 @@ internal fun VpnService.hasPhysicalIPv6(): Boolean {
  *
  *   "tcp://89.44.86.85:12345"            → [89.44.86.85]
  *   "quic://[2a09:5302:ffff::132a]:65535" → [2a09:5302:ffff::132a]
- *   "tls://hostname.example.com:443"     → [] (skipped — hostname DNS would block main thread)
+ *   "tls://hostname.example.com:443"     → [<all A/AAAA records>], or [] on failure
+ *
+ * Blocks on DNS for hostname peers, so callers must run it off the main thread.
  */
 internal fun parsePeerHosts(addr: String): List<InetAddress> {
     val hostPart = addr.substringAfter("://")

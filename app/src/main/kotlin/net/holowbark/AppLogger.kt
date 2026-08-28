@@ -7,11 +7,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.ArrayDeque
 
 /**
- * In-memory circular log buffer — readable from the Logs UI screen.
- * All VPN classes write here (in addition to android.util.Log).
+ * A bounded in-memory log the Logs screen can read. Everything in the app logs
+ * here; android.util.Log alone is not visible to a user debugging on their own
+ * network.
  */
 object AppLogger {
 
@@ -22,21 +22,20 @@ object AppLogger {
     private const val MAX_LINES = 500
     private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
-    private val buf = ArrayDeque<Line>(MAX_LINES + 1)
+    // Replaced wholesale rather than mutated, so readers never see a torn list and
+    // appending costs one allocation instead of copying the whole buffer.
     private val _lines = MutableStateFlow<List<Line>>(emptyList())
     val lines: StateFlow<List<Line>> = _lines.asStateFlow()
 
     @Synchronized
     fun append(level: Level, tag: String, msg: String) {
-        if (buf.size >= MAX_LINES) buf.poll()
-        buf.add(Line(fmt.format(Date()), level, tag, msg))
-        _lines.value = buf.toList()
+        val current = _lines.value
+        val kept = if (current.size >= MAX_LINES) current.subList(1, current.size) else current
+        _lines.value = kept + Line(fmt.format(Date()), level, tag, msg)
     }
 
-    @Synchronized
-    fun clear() { buf.clear(); _lines.value = emptyList() }
+    fun clear() { _lines.value = emptyList() }
 
-    // Convenience wrappers — also forward to android.util.Log
     fun v(tag: String, msg: String) { Log.v(tag, msg); append(Level.V, tag, msg) }
     fun d(tag: String, msg: String) { Log.d(tag, msg); append(Level.D, tag, msg) }
     fun i(tag: String, msg: String) { Log.i(tag, msg); append(Level.I, tag, msg) }

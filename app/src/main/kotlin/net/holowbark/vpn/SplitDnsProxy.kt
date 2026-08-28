@@ -10,7 +10,6 @@ import kotlinx.coroutines.launch
 import net.holowbark.AppLogger
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
@@ -42,9 +41,9 @@ class SplitDnsProxy(
     companion object {
         private const val TAG = "SplitDnsProxy"
         val PROXY_IP: ByteArray = byteArrayOf(198.toByte(), 18, 0, 53)
-        val PROXY_ADDR: InetAddress = InetAddress.getByAddress(PROXY_IP)
         private const val YGG_SRC_PORT = 55353
         private const val TIMEOUT_MS = 4000
+        private const val YGG_TLD = ".ygg"
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -55,23 +54,18 @@ class SplitDnsProxy(
 
     /** Called by PacketRouter when it sees a UDP packet destined for PROXY_ADDR:53. */
     fun handleQuery(tunPacket: ByteArray) {
-        if (tunPacket.size < 28) return
-        val ihl = (tunPacket[0].toInt() and 0x0F) * 4
-        if (ihl < 20 || tunPacket.size < ihl + 8) return
-        val clientIp   = tunPacket.copyOfRange(12, 16)
-        val clientPort = ((tunPacket[ihl].toInt() and 0xFF) shl 8) or
-                          (tunPacket[ihl + 1].toInt() and 0xFF)
-        val dnsPayload = tunPacket.copyOfRange(ihl + 8, tunPacket.size)
-        if (dnsPayload.size < 12) return
+        val headerLen = tunPacket.ipv4HeaderLen()
+        if (headerLen < 20 || tunPacket.size < headerLen + UDP_HEADER_LEN + 12) return
+        val clientIp = tunPacket.copyOfRange(12, 16)
+        val clientPort = tunPacket.u16(headerLen)
+        val dnsPayload = tunPacket.copyOfRange(headerLen + UDP_HEADER_LEN, tunPacket.size)
 
         val name = extractDnsName(dnsPayload)
-        AppLogger.d(TAG, "DNS query: name=${name.ifEmpty { "(empty)" }} → ${if (name.endsWith(".ygg")) "ygg" else "upstream"}")
+        val viaYgg = name.endsWith(YGG_TLD)
+        AppLogger.d(TAG, "DNS query ${name.ifEmpty { "(empty)" }} → ${if (viaYgg) "ygg" else "upstream"}")
 
-        if (name.endsWith(".ygg")) {
-            routeViaYgg(clientIp, clientPort, dnsPayload)
-        } else {
-            routeViaUpstream(clientIp, clientPort, dnsPayload)
-        }
+        if (viaYgg) routeViaYgg(clientIp, clientPort, dnsPayload)
+        else routeViaUpstream(clientIp, clientPort, dnsPayload)
     }
 
     /**
@@ -79,27 +73,22 @@ class SplitDnsProxy(
      * a 200::/7 source on port 53 (Yggdrasil DNS response).
      */
     fun handleYggDnsResponse(packet: ByteArray) {
-        if (packet.size < 48) return
-        val udpLen     = ((packet[44].toInt() and 0xFF) shl 8) or (packet[45].toInt() and 0xFF)
-        val payloadLen = udpLen - 8
-        if (payloadLen < 4 || packet.size < 48 + payloadLen) return
-        val dnsResponse = packet.copyOfRange(48, 48 + payloadLen)
-        val txId        = ((dnsResponse[0].toInt() and 0xFF) shl 8) or
-                           (dnsResponse[1].toInt() and 0xFF)
-        val pending = pendingYgg.remove(txId) ?: return
-        val (clientIp, clientPort) = pending
-        writeToTun(buildIPv4UdpReply(PROXY_IP, clientIp, 53, clientPort, dnsResponse))
+        val answer = packet.udpPayload() ?: return
+        if (answer.size < 4) return
+        val (clientIp, clientPort) = pendingYgg.remove(answer.dnsTransactionId()) ?: return
+        writeToTun(buildIPv4UdpReply(PROXY_IP, clientIp, DNS_PORT, clientPort, answer))
     }
 
     private fun routeViaYgg(clientIp: ByteArray, clientPort: Int, dnsPayload: ByteArray) {
-        val ourBytes = parseYggSelfAddr(yggMgr.getAddress()) ?: run {
+        val ourBytes = parseIpv6Bytes(yggMgr.getAddress()) ?: run {
             AppLogger.w(TAG, "routeViaYgg: Ygg address not available")
             return
         }
-        val txId = ((dnsPayload[0].toInt() and 0xFF) shl 8) or (dnsPayload[1].toInt() and 0xFF)
+        val txId = dnsPayload.dnsTransactionId()
         pendingYgg[txId] = clientIp to clientPort
-        val pkt = buildIPv6UDP(ourBytes, yggDnsResolver.address, YGG_SRC_PORT, 53, dnsPayload)
-        yggMgr.writePacket(pkt)
+        yggMgr.writePacket(
+            buildIPv6UDP(ourBytes, yggDnsResolver.address, YGG_SRC_PORT, DNS_PORT, dnsPayload)
+        )
         scope.launch {
             delay(TIMEOUT_MS.toLong())
             pendingYgg.remove(txId)
@@ -117,12 +106,13 @@ class SplitDnsProxy(
                 socket = DatagramSocket()
                 protect(socket)
                 socket.soTimeout = TIMEOUT_MS
-                socket.send(DatagramPacket(dnsPayload, dnsPayload.size, upstream, 53))
+                socket.send(DatagramPacket(dnsPayload, dnsPayload.size, upstream, DNS_PORT))
                 val buf  = ByteArray(4096)
                 val recv = DatagramPacket(buf, buf.size)
                 socket.receive(recv)
-                val reply = buildIPv4UdpReply(PROXY_IP, clientIp, 53, clientPort, buf.copyOf(recv.length))
-                writeToTun(reply)
+                writeToTun(
+                    buildIPv4UdpReply(PROXY_IP, clientIp, DNS_PORT, clientPort, buf.copyOf(recv.length))
+                )
             } catch (e: Exception) {
                 if (isActive) AppLogger.w(TAG, "upstream DNS failed: $e")
             } finally {

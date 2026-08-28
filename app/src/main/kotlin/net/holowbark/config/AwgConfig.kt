@@ -44,6 +44,9 @@ data class AwgConfig(
 ) {
     /** True when the config contains at least one AmneziaWG-specific field. */
     val isAwg: Boolean get() = jc != null || s1 != null || h1 != null || i1 != null
+
+    /** The name shown to the user and written to logs for this config. */
+    val protocolName: String get() = if (isAwg) "AmneziaWG" else "WireGuard"
 }
 
 class AwgConfigParseException(message: String) : Exception(message)

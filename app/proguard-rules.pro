@@ -1,9 +1,12 @@
-# Keep gomobile generated classes
+# gomobile bindings — the JNI layer resolves these by name, so nothing here may be
+# renamed or removed. The package names come from `gomobile bind` over
+# ./contrib/mobile, ./src/config and ./contrib/awgmobile (see Makefile).
 -keep class go.** { *; }
--keep class yggdrasil.** { *; }
--keep class amneziawg.** { *; }
+-keep class mobile.** { *; }
+-keep class awgmobile.** { *; }
+-keep class config.** { *; }
 
-# Keep kotlinx.serialization
+# kotlinx.serialization
 -keepattributes *Annotation*, InnerClasses
 -dontnote kotlinx.serialization.AnnotationsKt
 

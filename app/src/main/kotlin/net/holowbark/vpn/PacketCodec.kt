@@ -6,221 +6,160 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Utilities for bridging AmneziaWG ↔ Yggdrasil at the Kotlin layer.
+ * Builders and parsers for the raw packets Holowbark moves by hand.
  *
- * AWG uses chanBind (no real sockets). Its WireGuard protocol packets are
- * exposed via RecvWGPacket / SendWGPacket. Kotlin wraps them in IPv6 UDP
- * frames and routes through the Yggdrasil overlay.
- *
- * Local WG port constant used as src port in outbound packets and as the
- * expected dst port when filtering inbound Yggdrasil packets.
+ * AmneziaWG runs on a channel-backed bind rather than a real socket, so its
+ * WireGuard protocol frames arrive as plain byte arrays. They are wrapped in IPv6
+ * UDP here and handed to the Yggdrasil overlay, and unwrapped again on the way
+ * back. The same code builds the ICMPv6 pings and the split-DNS replies.
  */
+
+/** Source port of outbound WG frames, and the expected destination port inbound. */
 const val WG_LOCAL_PORT = 51820
 
-/**
- * Wrap [payload] (a raw WireGuard protocol packet) in an IPv6 UDP frame
- * addressed from our Yggdrasil address to the AWG server's Yggdrasil address.
- */
+private const val DNS_HEADER_LEN = 12
+private const val IPV4_HEADER_LEN = 20
+
+/** Wrap a raw WireGuard frame in an IPv6 UDP datagram between two overlay addresses. */
 fun buildIPv6UDP(
-    srcAddr: ByteArray,   // 16 bytes
-    dstAddr: ByteArray,   // 16 bytes
+    srcAddr: ByteArray,
+    dstAddr: ByteArray,
     srcPort: Int,
     dstPort: Int,
     payload: ByteArray,
 ): ByteArray {
-    val udpLen = 8 + payload.size
-    val buf = ByteBuffer.allocate(40 + udpLen).order(ByteOrder.BIG_ENDIAN)
-    // IPv6 header (40 bytes)
-    buf.putInt(0x60000000)             // version=6, TC=0, flow=0
-    buf.putShort(udpLen.toShort())     // payload length
-    buf.put(0x11.toByte())             // next header = UDP
-    buf.put(64.toByte())               // hop limit
+    val udpLen = UDP_HEADER_LEN + payload.size
+    val buf = ByteBuffer.allocate(IPV6_HEADER_LEN + udpLen).order(ByteOrder.BIG_ENDIAN)
+    buf.putInt(0x60000000)                  // version 6, traffic class 0, flow label 0
+    buf.putShort(udpLen.toShort())
+    buf.put(IP_PROTO_UDP.toByte())
+    buf.put(64)                             // hop limit
     buf.put(srcAddr)
     buf.put(dstAddr)
-    // UDP header (8 bytes) — checksum computed below
     buf.putShort(srcPort.toShort())
     buf.putShort(dstPort.toShort())
     buf.putShort(udpLen.toShort())
-    buf.putShort(0)                    // checksum placeholder
+    buf.putShort(0)                         // checksum, filled in below
     buf.put(payload)
+
     val bytes = buf.array()
-    // RFC 2460 §8.1: UDP over IPv6 checksum is mandatory (0 is illegal).
-    val cksum = udpv6Checksum(srcAddr, dstAddr, bytes, udpOffset = 40, udpLen = udpLen)
-    bytes[40 + 6] = (cksum ushr 8).toByte()
-    bytes[40 + 7] = (cksum and 0xFF).toByte()
+    // RFC 8200 §8.1: unlike IPv4, a zero UDP checksum is illegal over IPv6.
+    var sum = ipv6Checksum(srcAddr, dstAddr, bytes, IPV6_HEADER_LEN, udpLen, IP_PROTO_UDP)
+    if (sum == 0) sum = 0xFFFF
+    bytes.putU16(IPV6_HEADER_LEN + 6, sum)
     return bytes
 }
 
-private fun udpv6Checksum(
-    src: ByteArray, dst: ByteArray,
-    pkt: ByteArray, udpOffset: Int, udpLen: Int,
-): Int {
-    var sum = 0L
-    // IPv6 pseudo-header: src(16) + dst(16) + UDP length(4) + zeros(3) + next-header(1)
-    for (i in 0..14 step 2) sum += ((src[i].toLong() and 0xFF) shl 8) or (src[i + 1].toLong() and 0xFF)
-    for (i in 0..14 step 2) sum += ((dst[i].toLong() and 0xFF) shl 8) or (dst[i + 1].toLong() and 0xFF)
-    sum += udpLen.toLong()
-    sum += 17L   // next-header = UDP
-    // UDP header + data
-    var i = udpOffset
-    while (i + 1 < udpOffset + udpLen) {
-        sum += ((pkt[i].toLong() and 0xFF) shl 8) or (pkt[i + 1].toLong() and 0xFF)
-        i += 2
-    }
-    if (udpLen % 2 != 0) sum += (pkt[udpOffset + udpLen - 1].toLong() and 0xFF) shl 8
-    while (sum ushr 16 != 0L) sum = (sum and 0xFFFF) + (sum ushr 16)
-    val result = (sum.inv() and 0xFFFF).toInt()
-    // RFC 2460: if computed checksum is 0, transmit as 0xFFFF
-    return if (result == 0) 0xFFFF else result
-}
-
 /**
- * Parse an IPv6 packet received from Yggdrasil.
- * Returns the UDP payload if the packet:
- *   - is IPv6
- *   - next header is UDP (0x11)
- *   - source address matches [expectedSrcAddr]
- * Returns null otherwise.
+ * The UDP payload of an IPv6 packet from [expectedSrcAddr], or null when the
+ * packet is not one — wrong version, wrong protocol, wrong sender, or truncated.
  */
 fun ByteArray.extractWGPayload(expectedSrcAddr: ByteArray): ByteArray? {
-    if (size < 48) return null                          // need at least IPv6(40)+UDP(8)
-    if ((this[0].toInt() and 0xF0) != 0x60) return null // not IPv6
-    if (this[6] != 0x11.toByte()) return null           // next header != UDP
-    // Source address is bytes 8–23
-    for (i in 0..15) {
-        if (this[8 + i] != expectedSrcAddr[i]) return null
-    }
-    // UDP payload starts at byte 48 (40 IPv6 + 8 UDP header)
-    val udpLen = ((this[44].toInt() and 0xFF) shl 8) or (this[45].toInt() and 0xFF)
-    val payloadLen = udpLen - 8
-    if (payloadLen <= 0 || size < 48 + payloadLen) return null
-    return copyOfRange(48, 48 + payloadLen)
+    if (size < IPV6_HEADER_LEN + UDP_HEADER_LEN) return null
+    if (!isIpv6() || ipv6NextHeader() != IP_PROTO_UDP) return null
+    for (i in 0..15) if (this[8 + i] != expectedSrcAddr[i]) return null
+    return udpPayload()
 }
 
+/** The UDP payload of an IPv6 datagram, or null when the length field does not fit. */
+fun ByteArray.udpPayload(): ByteArray? {
+    val start = IPV6_HEADER_LEN + UDP_HEADER_LEN
+    if (size < start) return null
+    val payloadLen = u16(IPV6_HEADER_LEN + 4) - UDP_HEADER_LEN
+    if (payloadLen <= 0 || size < start + payloadLen) return null
+    return copyOfRange(start, start + payloadLen)
+}
+
+/** Source port of an IPv6 UDP datagram. */
+fun ByteArray.udpSrcPort(): Int = u16(IPV6_HEADER_LEN)
+
 /**
- * Parse the AWG server Yggdrasil address (IPv6) from an endpoint string like
- * "[200:4825:fd69:6d41:5475:a08a:8885:9542]:44555" → 16-byte array.
- * Returns null if the address is not an IPv6 address.
+ * The 16 address bytes of an IPv6 host, accepting either a bare address or an
+ * endpoint such as `[200:…]:44555` or `quic://[200:…]:65535`. Null for anything
+ * that is not IPv6.
  */
-fun parseYggAddrBytes(endpoint: String): ByteArray? {
-    return try {
-        val host = endpoint.substringAfter("://")
-            .substringBefore('%')
-            .let {
-                if (it.startsWith("[")) it.substringAfter("[").substringBefore("]")
-                else it.substringBefore(':')
-            }
-        val addr = InetAddress.getByName(host)
-        if (addr is Inet6Address) addr.address else null
-    } catch (_: Exception) { null }
-}
+fun parseIpv6Bytes(hostOrEndpoint: String): ByteArray? = runCatching {
+    val host = hostOrEndpoint
+        .substringAfter("://")
+        .substringBefore('%')
+        .let { if (it.startsWith("[")) it.substringAfter('[').substringBefore(']') else it }
+    (InetAddress.getByName(host) as? Inet6Address)?.address
+}.getOrNull()
 
-/** Parse the port from an endpoint string like "[...]:44555" → 44555. */
-fun parseEndpointPort(endpoint: String): Int {
-    return try {
-        endpoint.substringAfterLast(':').toInt()
-    } catch (_: Exception) { 44555 }
-}
-
-/** Parse our own Yggdrasil address string to 16-byte array. */
-fun parseYggSelfAddr(addrString: String): ByteArray? {
-    return try {
-        val addr = InetAddress.getByName(addrString)
-        if (addr is Inet6Address) addr.address else null
-    } catch (_: Exception) { null }
-}
-
-// ─── ICMPv6 Echo (ping) ──────────────────────────────────────────────────────
+/** The port of an endpoint such as `[200:…]:44555`, or [fallback] if absent. */
+fun parseEndpointPort(endpoint: String, fallback: Int = 44555): Int =
+    endpoint.substringAfterLast(':').toIntOrNull() ?: fallback
 
 /**
- * Build a complete IPv6 + ICMPv6 Echo Request packet.
- * [seq] is a 16-bit sequence number used to correlate replies.
+ * An IPv6 ICMPv6 Echo Request. [seq] correlates the reply, which arrives on the
+ * Yggdrasil read loop rather than through any socket.
  */
 fun buildICMPv6Echo(srcAddr: ByteArray, dstAddr: ByteArray, seq: Int): ByteArray {
-    val data = ByteArray(8)               // 8 zero-bytes payload
-    val icmpLen = 8 + data.size           // 8-byte ICMPv6 header + data
-    val buf = ByteBuffer.allocate(40 + icmpLen).order(ByteOrder.BIG_ENDIAN)
-    // IPv6 header
+    val icmpLen = 16                        // 8-byte header + 8 zero bytes of data
+    val buf = ByteBuffer.allocate(IPV6_HEADER_LEN + icmpLen).order(ByteOrder.BIG_ENDIAN)
     buf.putInt(0x60000000)
     buf.putShort(icmpLen.toShort())
-    buf.put(0x3a.toByte())                // next header = ICMPv6
-    buf.put(64.toByte())
+    buf.put(IP_PROTO_ICMPV6.toByte())
+    buf.put(64)
     buf.put(srcAddr)
     buf.put(dstAddr)
-    // ICMPv6 Echo Request (type 128)
-    val icmpOffset = 40
-    buf.put(128.toByte())                 // type
-    buf.put(0.toByte())                   // code
-    buf.putShort(0)                       // checksum placeholder
-    buf.putShort(1)                       // identifier
+    buf.put(ICMPV6_ECHO_REQUEST.toByte())
+    buf.put(0)                              // code
+    buf.putShort(0)                         // checksum, filled in below
+    buf.putShort(1)                         // identifier
     buf.putShort(seq.toShort())
-    buf.put(data)
+    buf.put(ByteArray(8))
+
     val bytes = buf.array()
-    val cksum = icmpv6Checksum(srcAddr, dstAddr, bytes, icmpOffset, icmpLen)
-    bytes[icmpOffset + 2] = (cksum ushr 8).toByte()
-    bytes[icmpOffset + 3] = (cksum and 0xFF).toByte()
+    val sum = ipv6Checksum(srcAddr, dstAddr, bytes, IPV6_HEADER_LEN, icmpLen, IP_PROTO_ICMPV6)
+    bytes.putU16(IPV6_HEADER_LEN + 2, sum)
     return bytes
 }
 
-private fun icmpv6Checksum(
-    src: ByteArray, dst: ByteArray,
-    pkt: ByteArray, icmpOffset: Int, icmpLen: Int,
-): Int {
-    var sum = 0L
-    // Pseudo-header: src(16) + dst(16) + upper-layer length(4) + zeros(3) + next-header(1)
-    for (i in 0..14 step 2) sum += ((src[i].toLong() and 0xFF) shl 8) or (src[i + 1].toLong() and 0xFF)
-    for (i in 0..14 step 2) sum += ((dst[i].toLong() and 0xFF) shl 8) or (dst[i + 1].toLong() and 0xFF)
-    sum += icmpLen.toLong()
-    sum += 58L                            // ICMPv6 next-header value
-    // ICMPv6 body
-    var i = icmpOffset
-    while (i + 1 < icmpOffset + icmpLen) {
-        sum += ((pkt[i].toLong() and 0xFF) shl 8) or (pkt[i + 1].toLong() and 0xFF)
-        i += 2
-    }
-    if (icmpLen % 2 != 0) sum += (pkt[icmpOffset + icmpLen - 1].toLong() and 0xFF) shl 8
-    while (sum ushr 16 != 0L) sum = (sum and 0xFFFF) + (sum ushr 16)
-    return (sum.inv() and 0xFFFF).toInt()
-}
+const val ICMPV6_ECHO_REQUEST = 128
+const val ICMPV6_ECHO_REPLY = 129
 
-// ─── Dummy IPv4 for WG handshake trigger ─────────────────────────────────────
+/** True when this is an ICMPv6 Echo Reply long enough to carry a sequence number. */
+fun ByteArray.isIcmpv6EchoReply(): Boolean =
+    size >= IPV6_HEADER_LEN + 8 &&
+        isIpv6() &&
+        ipv6NextHeader() == IP_PROTO_ICMPV6 &&
+        (this[IPV6_HEADER_LEN].toInt() and 0xFF) == ICMPV6_ECHO_REPLY
+
+/** Sequence number of an ICMPv6 Echo message. */
+fun ByteArray.icmpv6EchoSeq(): Int = u16(IPV6_HEADER_LEN + 6)
 
 /**
- * Build a minimal ICMPv6 Echo Request (ping) packet addressed to the AWG server's
- * allowed IP. This is fed into AWG's plaintext path to trigger the WireGuard
- * handshake without real user traffic.
- *
- * Uses a fixed destination from the AllowedIPs range (10.0.0.1) so AWG encrypts
- * and sends it, causing chanBind.Send() → bridge coroutine → Yggdrasil.
+ * A minimal ICMP Echo Request inside the WireGuard AllowedIPs range. Feeding this
+ * into the plaintext side of AWG makes it encrypt something, which is what
+ * triggers the handshake — there is no other way to start one on demand.
  */
-fun buildDummyIPv4(): ByteArray {
-    // Minimal ICMP Echo Request: 20-byte IPv4 header + 8-byte ICMP
+fun buildHandshakeTrigger(): ByteArray {
     val buf = ByteBuffer.allocate(28).order(ByteOrder.BIG_ENDIAN)
-    // IPv4 header
-    buf.put(0x45.toByte())           // version=4, IHL=5
-    buf.put(0)                       // DSCP
-    buf.putShort(28)                 // total length
-    buf.putShort(0)                  // ID
-    buf.putShort(0)                  // flags + fragment offset
-    buf.put(64)                      // TTL
-    buf.put(1)                       // protocol = ICMP
-    buf.putShort(0)                  // checksum (0 = let stack handle)
-    buf.put(byteArrayOf(10, 100, 0, 1))   // src: 10.100.0.1 (our TUN address)
-    buf.put(byteArrayOf(10, 0, 0, 1))     // dst: 10.0.0.1 (server's VPN IP)
-    // ICMP Echo Request
-    buf.put(8)                       // type = Echo Request
-    buf.put(0)                       // code
-    buf.putShort(0)                  // checksum
-    buf.putShort(1)                  // identifier
-    buf.putShort(1)                  // sequence
-    return buf.array()
+    buf.put(0x45)                           // version 4, header length 5 words
+    buf.put(0)                              // DSCP
+    buf.putShort(28)                        // total length
+    buf.putShort(0)                         // identification
+    buf.putShort(0)                         // flags and fragment offset
+    buf.put(64)                             // TTL
+    buf.put(IP_PROTO_ICMP.toByte())
+    buf.putShort(0)                         // header checksum, filled in below
+    buf.put(byteArrayOf(10, 100, 0, 1))     // our TUN address
+    buf.put(byteArrayOf(10, 0, 0, 1))       // the server's VPN address
+    buf.put(8)                              // ICMP Echo Request
+    buf.put(0)                              // code
+    buf.putShort(0)                         // ICMP checksum, unchecked by the peer
+    buf.putShort(1)                         // identifier
+    buf.putShort(1)                         // sequence
+
+    val bytes = buf.array()
+    bytes.putU16(10, ipv4HeaderChecksum(bytes))
+    return bytes
 }
 
-// ─── Split-DNS proxy helpers ──────────────────────────────────────────────────
-
 /**
- * Build an IPv4 UDP packet (e.g. DNS reply from the local proxy to the system resolver).
- * The IPv4 header checksum is computed; the UDP checksum is 0 (optional for IPv4 UDP).
+ * An IPv4 UDP datagram, used for the split-DNS proxy's replies to the system
+ * resolver. The UDP checksum is left at zero, which IPv4 permits.
  */
 fun buildIPv4UdpReply(
     srcIp: ByteArray,
@@ -229,60 +168,96 @@ fun buildIPv4UdpReply(
     dstPort: Int,
     payload: ByteArray,
 ): ByteArray {
-    val udpLen = 8 + payload.size
-    val totalLen = 20 + udpLen
+    val udpLen = UDP_HEADER_LEN + payload.size
+    val totalLen = IPV4_HEADER_LEN + udpLen
     val buf = ByteBuffer.allocate(totalLen).order(ByteOrder.BIG_ENDIAN)
-    buf.put(0x45.toByte())
+    buf.put(0x45)
     buf.put(0)
     buf.putShort(totalLen.toShort())
     buf.putShort(0)
-    buf.putShort(0x4000.toShort())  // DF flag
-    buf.put(64.toByte())
-    buf.put(0x11.toByte())           // UDP
-    buf.putShort(0)                  // checksum placeholder
+    buf.putShort(0x4000.toShort())          // don't fragment
+    buf.put(64)
+    buf.put(IP_PROTO_UDP.toByte())
+    buf.putShort(0)                         // header checksum, filled in below
     buf.put(srcIp)
     buf.put(dstIp)
     buf.putShort(srcPort.toShort())
     buf.putShort(dstPort.toShort())
     buf.putShort(udpLen.toShort())
-    buf.putShort(0)                  // UDP checksum = 0 (disabled)
+    buf.putShort(0)                         // UDP checksum, optional over IPv4
     buf.put(payload)
+
     val bytes = buf.array()
-    val cksum = ipv4HeaderChecksum(bytes, 0, 20)
-    bytes[10] = (cksum ushr 8).toByte()
-    bytes[11] = (cksum and 0xFF).toByte()
+    bytes.putU16(10, ipv4HeaderChecksum(bytes))
     return bytes
 }
 
-private fun ipv4HeaderChecksum(data: ByteArray, offset: Int, len: Int): Int {
+/**
+ * The first question name in a DNS message, lowercased and dotted, or "" when the
+ * message is too short. A compression pointer ends the name early — the proxy only
+ * needs the suffix, and a query's first name is never compressed in practice.
+ */
+fun extractDnsName(dnsPayload: ByteArray): String {
+    if (dnsPayload.size <= DNS_HEADER_LEN) return ""
+    val name = StringBuilder()
+    var i = DNS_HEADER_LEN
+    while (i < dnsPayload.size) {
+        val len = dnsPayload[i].toInt() and 0xFF
+        if (len == 0 || (len and 0xC0) == 0xC0) break
+        i++
+        if (i + len > dnsPayload.size) break
+        if (name.isNotEmpty()) name.append('.')
+        name.append(String(dnsPayload, i, len, Charsets.US_ASCII))
+        i += len
+    }
+    return name.toString().lowercase()
+}
+
+/** Transaction id of a DNS message. */
+fun ByteArray.dnsTransactionId(): Int = u16(0)
+
+/**
+ * The internet checksum over an IPv6 pseudo-header plus [len] bytes at [offset].
+ * The only difference between the UDP and ICMPv6 variants is [nextHeader].
+ */
+private fun ipv6Checksum(
+    src: ByteArray,
+    dst: ByteArray,
+    packet: ByteArray,
+    offset: Int,
+    len: Int,
+    nextHeader: Int,
+): Int {
+    var sum = 0L
+    for (i in 0..14 step 2) sum += src.u16(i)
+    for (i in 0..14 step 2) sum += dst.u16(i)
+    sum += len.toLong()
+    sum += nextHeader.toLong()
+    sum += onesComplementSum(packet, offset, len)
+    return sum.foldCarry()
+}
+
+private fun ipv4HeaderChecksum(packet: ByteArray): Int =
+    onesComplementSum(packet, 0, IPV4_HEADER_LEN).foldCarry()
+
+private fun onesComplementSum(data: ByteArray, offset: Int, len: Int): Long {
     var sum = 0L
     var i = offset
-    while (i < offset + len - 1) {
-        sum += ((data[i].toLong() and 0xFF) shl 8) or (data[i + 1].toLong() and 0xFF)
+    while (i + 1 < offset + len) {
+        sum += data.u16(i)
         i += 2
     }
+    if (len % 2 != 0) sum += (data[offset + len - 1].toLong() and 0xFF) shl 8
+    return sum
+}
+
+private fun Long.foldCarry(): Int {
+    var sum = this
     while (sum ushr 16 != 0L) sum = (sum and 0xFFFF) + (sum ushr 16)
     return (sum.inv() and 0xFFFF).toInt()
 }
 
-/**
- * Extract the first QNAME from a raw DNS payload (starting with the 12-byte header).
- * Returns the name in lowercase dot notation (e.g. "www.example.ygg"), or "" on error.
- * Compression pointers are not followed — returns the partial name before the pointer.
- */
-fun extractDnsName(dnsPayload: ByteArray): String {
-    if (dnsPayload.size < 13) return ""
-    val sb = StringBuilder()
-    var i = 12  // skip 12-byte DNS header
-    while (i < dnsPayload.size) {
-        val len = dnsPayload[i].toInt() and 0xFF
-        if (len == 0) break
-        if ((len and 0xC0) == 0xC0) break  // compression pointer — stop
-        i++
-        if (i + len > dnsPayload.size) break
-        if (sb.isNotEmpty()) sb.append('.')
-        sb.append(String(dnsPayload, i, len, Charsets.US_ASCII))
-        i += len
-    }
-    return sb.toString().lowercase()
+private fun ByteArray.putU16(offset: Int, value: Int) {
+    this[offset] = (value ushr 8).toByte()
+    this[offset + 1] = (value and 0xFF).toByte()
 }

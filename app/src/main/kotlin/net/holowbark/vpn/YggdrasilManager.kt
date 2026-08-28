@@ -7,8 +7,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
-private const val TAG = "YggdrasilManager"
-
 class YggdrasilManager(
     private val onPacketOut: (ByteArray) -> Unit,
     /** Called when Yggdrasil receives an inbound WG protocol packet from the server. */
@@ -16,17 +14,21 @@ class YggdrasilManager(
     private val onStatusChange: (state: LayerState, address: String, peerCount: Int) -> Unit = { _, _, _ -> },
 ) {
     companion object {
-        private const val POLL_INTERVAL_MS      = 30_000L
-        private const val POLL_INTERVAL_SCREEN_OFF = 60_000L
-        private const val PING_TIMEOUT_MS       = 4_000L
+        private const val TAG = "YggdrasilManager"
+        private const val POLL_INTERVAL_MS           = 30_000L
+        private const val POLL_INTERVAL_SCREEN_OFF   = 60_000L
+        /** Until a peer comes up there is nothing to save power for, and the AWG
+         *  chain is gated on the transition — so poll hard for it. */
+        private const val POLL_INTERVAL_NO_PEERS     = 1_000L
+        private const val PING_TIMEOUT_MS            = 4_000L
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     @Volatile private var ygg: Yggdrasil? = null
     /** AWG server 16-byte IPv6 address; packets from this src go to [onWGPacket]. */
     @Volatile var wgServerAddr: ByteArray? = null
-    /** Adjusted by TunnelService based on screen state to reduce battery drain. */
-    @Volatile var pollIntervalMs: Long = POLL_INTERVAL_MS
+    /** Set by TunnelService while the screen is off, to reduce battery drain. */
+    @Volatile var slowPolling: Boolean = false
     /** Split-DNS proxy; receives Yggdrasil DNS responses before they reach the TUN. */
     @Volatile var dnsProxy: SplitDnsProxy? = null
 
@@ -70,9 +72,11 @@ class YggdrasilManager(
         AppLogger.i(TAG, "Yggdrasil stopped")
     }
 
-    fun setPeers(peers: List<String>) {
+    /** Ask Yggdrasil to redial its configured peers now, without waiting for its
+     *  own backoff. The peer list itself is fixed at [start]. */
+    fun retryPeers() {
         ygg?.retryPeersNow()
-        AppLogger.d(TAG, "retryPeersNow for ${peers.size} peers")
+        AppLogger.d(TAG, "retryPeersNow")
     }
 
     fun writePacket(packet: ByteArray) {
@@ -97,12 +101,12 @@ class YggdrasilManager(
         destAddrStr: String,
         timeoutMs: Long = PING_TIMEOUT_MS,
     ): Long? {
-        val destBytes = parseYggSelfAddr(destAddrStr) ?: run {
+        val destBytes = parseIpv6Bytes(destAddrStr) ?: run {
             AppLogger.w(TAG, "pingYgg: cannot parse address '$destAddrStr'")
             return null
         }
         val ourAddrStr = getAddress()
-        val ourBytes   = parseYggSelfAddr(ourAddrStr) ?: run {
+        val ourBytes   = parseIpv6Bytes(ourAddrStr) ?: run {
             AppLogger.w(TAG, "pingYgg: our address not available")
             return null
         }
@@ -145,34 +149,29 @@ class YggdrasilManager(
                     }
                 }
 
-                // 2. ICMPv6 Echo Reply → complete pending pings
-                if (pkt.size >= 48
-                    && (pkt[0].toInt() and 0xF0) == 0x60   // IPv6
-                    && pkt[6] == 0x3a.toByte()              // next header = ICMPv6
-                    && pkt[40] == 0x81.toByte()             // type = Echo Reply (129)
-                ) {
-                    val seq = ((pkt[46].toInt() and 0xFF) shl 8) or (pkt[47].toInt() and 0xFF)
-                    val entry = pendingPings.remove(seq)
-                    if (entry != null) {
-                        AppLogger.d(TAG, "pingYgg reply seq=$seq rtt=${System.currentTimeMillis() - entry.second}ms")
-                        entry.first.complete(Unit)
-                        continue   // don't forward ping replies to TUN
+                // 2. ICMPv6 Echo Reply → complete a pending ping, never reaches the TUN
+                if (pkt.isIcmpv6EchoReply()) {
+                    val seq = pkt.icmpv6EchoSeq()
+                    val pending = pendingPings.remove(seq)
+                    if (pending != null) {
+                        AppLogger.d(TAG, "pingYgg reply seq=$seq " +
+                            "rtt=${System.currentTimeMillis() - pending.second}ms")
+                        pending.first.complete(Unit)
+                        continue
                     }
                 }
 
-                // 3. Yggdrasil DNS response → SplitDnsProxy (IPv6 UDP, src in 200::/7, srcPort=53)
+                // 3. DNS answer from an overlay resolver → the split-DNS proxy
                 val proxy = dnsProxy
                 if (proxy != null
-                    && pkt.size >= 48
-                    && (pkt[0].toInt() and 0xF0) == 0x60   // IPv6
-                    && pkt[6] == 0x11.toByte()              // UDP
-                    && (pkt[8].toInt() and 0xFE) == 0x02   // src in 200::/7
+                    && pkt.size >= IPV6_HEADER_LEN + UDP_HEADER_LEN
+                    && pkt.isIpv6()
+                    && pkt.ipv6NextHeader() == IP_PROTO_UDP
+                    && pkt[8].isYggdrasilPrefix()
+                    && pkt.udpSrcPort() == DNS_PORT
                 ) {
-                    val srcPort = ((pkt[40].toInt() and 0xFF) shl 8) or (pkt[41].toInt() and 0xFF)
-                    if (srcPort == 53) {
-                        proxy.handleYggDnsResponse(pkt)
-                        continue
-                    }
+                    proxy.handleYggDnsResponse(pkt)
+                    continue
                 }
 
                 // 4. Everything else → TUN
@@ -207,9 +206,11 @@ class YggdrasilManager(
                 val state = if (count > 0) LayerState.UP else LayerState.STARTING
                 onStatusChange(state, addr, count)
             }
-            // Fast-poll while no peer is up so UP detection (and the AWG chain
-            // gated on it) reacts in ~1s instead of waiting a full poll interval.
-            delay(if (count == 0) 1_000L else pollIntervalMs)
+            delay(when {
+                count == 0  -> POLL_INTERVAL_NO_PEERS
+                slowPolling -> POLL_INTERVAL_SCREEN_OFF
+                else        -> POLL_INTERVAL_MS
+            })
         }
     }
 

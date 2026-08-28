@@ -22,9 +22,6 @@ interface PeerDao {
     """)
     suspend fun getCountrySummaries(): List<CountrySummaryRow>
 
-    @Query("SELECT * FROM peers ORDER BY country, responseMs ASC")
-    suspend fun getAll(): List<Peer>
-
     @Query("DELETE FROM peers")
     suspend fun deleteAll()
 

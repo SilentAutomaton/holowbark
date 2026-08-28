@@ -38,15 +38,15 @@ class AwgManager(
 
     @Volatile private var backend: Backend? = null
     @Volatile private var activeScope: CoroutineScope? = null
-    private var protocolLabel = "WireGuard"
+    private var protocol = "WireGuard"
 
     fun start(config: AwgConfig) {
         if (backend != null) return
-        protocolLabel = if (config.isAwg) "AmneziaWG" else "WireGuard"
-        AppLogger.i(protocolLabel, "Starting $protocolLabel → ${config.endpoint}")
+        protocol = config.protocolName
+        AppLogger.i(TAG, "Starting $protocol → ${config.endpoint}")
 
         val settings = buildUAPI(config)
-        AppLogger.d(protocolLabel, "UAPI settings:\n${settings.replace(
+        AppLogger.d(TAG, "UAPI settings:\n${settings.replace(
             Regex("(?m)^(private_key|preshared_key)=.+$"), "$1=[REDACTED]")}")
 
         val b = Backend()
@@ -57,9 +57,9 @@ class AwgManager(
             val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
             activeScope = scope
             scope.launch { readLoop(b, scope) }
-            AppLogger.i(protocolLabel, "$protocolLabel started")
+            AppLogger.i(TAG, "$protocol started")
         } catch (e: Exception) {
-            AppLogger.e(protocolLabel, "Failed to start $protocolLabel: ${e.javaClass.simpleName}: ${e.message}")
+            AppLogger.e(TAG, "Failed to start $protocol: ${e.javaClass.simpleName}: ${e.message}")
             onStatusChange(LayerState.ERROR)
         }
     }
@@ -68,8 +68,8 @@ class AwgManager(
         activeScope?.cancel(); activeScope = null
         val b = backend ?: return
         backend = null
-        try { b.stop() } catch (e: Exception) { AppLogger.w(protocolLabel, "stop: $e") }
-        AppLogger.i(protocolLabel, "$protocolLabel stopped")
+        try { b.stop() } catch (e: Exception) { AppLogger.w(TAG, "stop: $e") }
+        AppLogger.i(TAG, "$protocol stopped")
     }
 
     /** Write a plaintext IP packet into the AWG stack for encryption and sending. */
@@ -77,7 +77,7 @@ class AwgManager(
         try {
             backend?.sendPacket(packet)
         } catch (e: Exception) {
-            AppLogger.w(protocolLabel, "sendPacket: $e")
+            AppLogger.w(TAG, "sendPacket: $e")
         }
     }
 
@@ -89,7 +89,7 @@ class AwgManager(
         try {
             backend?.sendWGPacket(wgPacket)
         } catch (e: Exception) {
-            AppLogger.w(protocolLabel, "sendWGPacket: $e")
+            AppLogger.w(TAG, "sendWGPacket: $e")
         }
     }
 
@@ -101,7 +101,7 @@ class AwgManager(
         return try {
             backend?.recvWGPacket()
         } catch (e: Exception) {
-            AppLogger.w(protocolLabel, "recvWGPacket: $e")
+            AppLogger.w(TAG, "recvWGPacket: $e")
             null
         }
     }
@@ -111,22 +111,23 @@ class AwgManager(
     private fun readLoop(b: Backend, scope: CoroutineScope) {
         var firstPacket = true
         while (scope.isActive && backend != null) {
+            // Exit on failure rather than retrying: recvPacket() fails only when the
+            // device is gone, and an immediate retry would spin a core.
             val pkt = try {
                 b.recvPacket()
             } catch (e: Exception) {
-                if (scope.isActive) AppLogger.w(protocolLabel, "recvPacket: $e")
-                null
-            }
-            if (pkt != null) {
-                if (firstPacket) {
-                    firstPacket = false
-                    AppLogger.i(protocolLabel, "WG handshake complete — tunnel UP (${pkt.size} bytes)")
-                    onStatusChange(LayerState.UP)
+                if (scope.isActive) {
+                    AppLogger.w(TAG, "recvPacket: $e")
+                    onStatusChange(LayerState.ERROR)
                 }
-                if (pkt.isNotEmpty()) {
-                    onPacketOut(pkt)
-                }
+                break
+            } ?: break
+            if (firstPacket) {
+                firstPacket = false
+                AppLogger.i(TAG, "WG handshake complete — tunnel UP (${pkt.size} bytes)")
+                onStatusChange(LayerState.UP)
             }
+            if (pkt.isNotEmpty()) onPacketOut(pkt)
         }
     }
 

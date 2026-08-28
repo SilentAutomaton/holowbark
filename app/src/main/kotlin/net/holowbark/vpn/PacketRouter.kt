@@ -4,20 +4,16 @@ import kotlinx.coroutines.*
 import net.holowbark.AppLogger
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
-import java.net.UnknownHostException
 
 /**
- * Userspace packet dispatcher sitting on the single TUN file descriptor.
+ * Userspace dispatcher on the single TUN file descriptor. Overlay traffic
+ * (200::/7) goes to Yggdrasil, everything else to the AWG tunnel, and DNS aimed at
+ * the split-proxy address is intercepted before either.
  *
- * Routing table:
- *  1. IPv6 200::/7  → Yggdrasil overlay
- *  2. Everything else → AmneziaWG tunnel
- *
- * Yggdrasil peer IPs are excluded from the VPN routes at the Builder level
- * (excludeRoute on API 33+), so their traffic never enters the TUN.
+ * Yggdrasil peer addresses are excluded from the VPN routes when the tunnel is
+ * built, so their packets never reach this loop.
  */
 class PacketRouter(
     private val tunFd: android.os.ParcelFileDescriptor,
@@ -72,68 +68,32 @@ class PacketRouter(
     }
 
     private fun dispatch(packet: ByteArray) {
+        if (dnsProxy != null && packet.isProxyDnsQuery()) {
+            dnsProxy.handleQuery(packet)
+            return
+        }
         val dst = packet.destinationAddress() ?: return
-
-        // Intercept UDP DNS queries to the split-DNS proxy virtual IP
-        val proxy = dnsProxy
-        if (proxy != null
-            && dst is Inet4Address
-            && (dst as Inet4Address).address.contentEquals(SplitDnsProxy.PROXY_IP)
-            && packet.size >= 20 && packet[9] == 0x11.toByte()  // IP protocol = UDP
-        ) {
-            val ihl = (packet[0].toInt() and 0x0F) * 4
-            if (packet.size >= ihl + 4) {
-                val dstPort = ((packet[ihl + 2].toInt() and 0xFF) shl 8) or
-                               (packet[ihl + 3].toInt() and 0xFF)
-                if (dstPort == 53) {
-                    proxy.handleQuery(packet)
-                    return
-                }
-            }
-        }
-
-        if (dst.isYggdrasil()) {
-            ygg.writePacket(packet)
-        } else {
-            awg.writePacket(packet)
-        }
+        if (dst.isYggdrasil()) ygg.writePacket(packet) else awg.writePacket(packet)
     }
 
-    // -------------------------------------------------------------------------
-    // Packet parsing helpers
-    // -------------------------------------------------------------------------
+    private fun ByteArray.isProxyDnsQuery(): Boolean {
+        if (!isIpv4() || size < IPV4_MIN_LEN || ipv4Protocol() != IP_PROTO_UDP) return false
+        if (!copyOfRange(16, 20).contentEquals(SplitDnsProxy.PROXY_IP)) return false
+        val headerLen = ipv4HeaderLen()
+        return size >= headerLen + 4 && u16(headerLen + 2) == DNS_PORT
+    }
 
-    private fun ByteArray.destinationAddress(): InetAddress? {
-        if (isEmpty()) return null
-        return when ((this[0].toInt() and 0xF0) ushr 4) {
-            4    -> parseIPv4Dest()
-            6    -> parseIPv6Dest()
+    private fun ByteArray.destinationAddress(): InetAddress? = runCatching {
+        when {
+            isIpv4() && size >= IPV4_MIN_LEN  -> InetAddress.getByAddress(copyOfRange(16, 20))
+            isIpv6() && size >= IPV6_HEADER_LEN -> InetAddress.getByAddress(copyOfRange(24, 40))
             else -> null
         }
-    }
-
-    /** IPv4: destination address at bytes [16..19] */
-    private fun ByteArray.parseIPv4Dest(): InetAddress? {
-        if (size < 20) return null
-        return try {
-            InetAddress.getByAddress(copyOfRange(16, 20))
-        } catch (e: UnknownHostException) { null }
-    }
-
-    /** IPv6: destination address at bytes [24..39] */
-    private fun ByteArray.parseIPv6Dest(): InetAddress? {
-        if (size < 40) return null
-        return try {
-            InetAddress.getByAddress(copyOfRange(24, 40))
-        } catch (e: UnknownHostException) { null }
-    }
+    }.getOrNull()
 }
 
-/**
- * Yggdrasil overlay: 200::/7
- * First byte of IPv6 address with mask 0xFE == 0x02, i.e. byte ∈ {0x02, 0x03}.
- */
-fun InetAddress.isYggdrasil(): Boolean {
-    if (this !is Inet6Address) return false
-    return (address[0].toInt() and 0xFE) == 0x02
-}
+private const val IPV4_MIN_LEN = 20
+
+/** True for an address in the Yggdrasil overlay range 200::/7. */
+fun InetAddress.isYggdrasil(): Boolean =
+    this is Inet6Address && address[0].isYggdrasilPrefix()

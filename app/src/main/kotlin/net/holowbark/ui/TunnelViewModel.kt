@@ -11,9 +11,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import net.holowbark.config.AwgConfig
 import net.holowbark.config.parseAwgConf
@@ -25,27 +23,22 @@ import net.holowbark.peers.models.Peer
 import net.holowbark.vpn.TunnelStatus
 import net.holowbark.vpn.VpnState
 import net.holowbark.vpn.YggNetworkState
+import net.holowbark.vpn.Prefs
 import net.holowbark.vpn.TunnelService
-import net.holowbark.vpn.parseYggAddrBytes
-import java.security.SecureRandom
+import net.holowbark.vpn.parseIpv6Bytes
+import java.net.Inet6Address
 
 class TunnelViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val prefs = app.getSharedPreferences("holowbark", Context.MODE_PRIVATE)
-    private val db    = PeerDatabase.getInstance(app)
-    val repo          = PeerRepository(db, app)
+    private val prefs = Prefs.of(app)
+    val repo = PeerRepository(PeerDatabase.getInstance(app), app)
 
-    // -------------------------------------------------------------------------
-    // State
-    // -------------------------------------------------------------------------
-
-    private val _tunnelStatus = MutableStateFlow(TunnelStatus.fromPrefs(prefs))
+    // Prefs survive process death, so a stored status is only meaningful while the
+    // service is still up in this process.
+    private val _tunnelStatus = MutableStateFlow(
+        if (TunnelService.isRunning) prefs.tunnelStatus() else TunnelStatus()
+    )
     val tunnelStatus: StateFlow<TunnelStatus> = _tunnelStatus.asStateFlow()
-
-    /** Convenience derived flow — overall VPN state only. */
-    val vpnState: StateFlow<VpnState> = _tunnelStatus
-        .map { it.overall }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, VpnState.IDLE)
 
     private val _awgConfig = MutableStateFlow<AwgConfig?>(null)
     val awgConfig: StateFlow<AwgConfig?> = _awgConfig.asStateFlow()
@@ -69,12 +62,8 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
-    private val _yggDnsEnabled = MutableStateFlow(prefs.getBoolean("ygg_dns_enabled", false))
+    private val _yggDnsEnabled = MutableStateFlow(prefs.yggDnsEnabled)
     val yggDnsEnabled: StateFlow<Boolean> = _yggDnsEnabled.asStateFlow()
-
-    // -------------------------------------------------------------------------
-    // Broadcast receiver
-    // -------------------------------------------------------------------------
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -97,11 +86,8 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         getApplication<Application>().unregisterReceiver(statusReceiver)
+        super.onCleared()
     }
-
-    // -------------------------------------------------------------------------
-    // AWG config
-    // -------------------------------------------------------------------------
 
     /**
      * Save AWG config. [rawText] is the original .conf file content and is stored
@@ -110,59 +96,31 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     fun saveAwgConfig(config: AwgConfig, rawText: String) {
         _awgConfig.value = config
         _rawConfText.value = rawText
-        prefs.edit()
-            .putString("awg_conf", config.toConfString())   // used when starting VPN
-            .putString("awg_conf_raw", rawText)              // used for display
-            .apply()
+        prefs.awgConf = config.toConfString()   // what the service is started with
+        prefs.awgConfRaw = rawText              // what the Config screen shows
     }
 
     private fun loadSavedConfig() {
-        val parsed = prefs.getString("awg_conf", null) ?: return
-        _awgConfig.value = runCatching { parseAwgConf(parsed) }.getOrNull()
-        _rawConfText.value = prefs.getString("awg_conf_raw", parsed)
+        val stored = prefs.awgConf ?: return
+        _awgConfig.value = runCatching { parseAwgConf(stored) }.getOrNull()
+        _rawConfText.value = prefs.awgConfRaw ?: stored
     }
-
-    // -------------------------------------------------------------------------
-    // VPN control
-    // -------------------------------------------------------------------------
 
     fun connect() {
         val app = getApplication<Application>()
-        val peers = _selectedPeers.value.toList()
-        val intent = Intent(app, TunnelService::class.java).apply {
-            action = TunnelService.ACTION_START
-            putStringArrayListExtra(TunnelService.EXTRA_YGG_PEERS, ArrayList(peers))
-            _awgConfig.value?.let { putExtra(TunnelService.EXTRA_AWG_CONF, it.toConfString()) }
-            putExtra(TunnelService.EXTRA_YGG_KEY, getOrCreateYggKey())
-        }
-        ContextCompat.startForegroundService(app, intent)
+        ContextCompat.startForegroundService(app, TunnelService.startIntent(
+            context = app,
+            peers   = _selectedPeers.value.toList(),
+            awgConf = _awgConfig.value?.toConfString(),
+            yggKey  = prefs.yggPrivateKey(),
+        ))
     }
 
-    fun getOrCreateYggKey(): String {
-        val existing = prefs.getString("ygg_private_key", null)
-        if (existing != null && existing.length == 128) return existing
-        val hex = generateEd25519Hex()
-        prefs.edit().putString("ygg_private_key", hex).apply()
-        return hex
-    }
-
-    private fun generateEd25519Hex(): String {
-        val kp = java.security.KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
-        // RFC 8410 DER: PKCS8 seed at offset 16 (32 bytes), X509 pubkey at offset 12 (32 bytes)
-        val seed = kp.private.encoded.sliceArray(16..47)
-        val pub  = kp.public.encoded.sliceArray(12..43)
-        return (seed + pub).joinToString("") { "%02x".format(it) }
-    }
-
-    fun resetYggKey() {
-        prefs.edit().remove("ygg_private_key").apply()
-    }
+    fun resetYggKey() = prefs.clearYggPrivateKey()
 
     fun disconnect() {
         val app = getApplication<Application>()
-        app.startService(Intent(app, TunnelService::class.java).apply {
-            action = TunnelService.ACTION_STOP
-        })
+        app.startService(TunnelService.stopIntent(app))
     }
 
     fun restartAwg() {
@@ -171,10 +129,6 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
             action = TunnelService.ACTION_RESTART_AWG
         })
     }
-
-    // -------------------------------------------------------------------------
-    // Peer data
-    // -------------------------------------------------------------------------
 
     fun refreshCountries(force: Boolean = false) {
         viewModelScope.launch {
@@ -223,39 +177,28 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleYggDns() {
         val enabled = !_yggDnsEnabled.value
         _yggDnsEnabled.value = enabled
-        prefs.edit().putBoolean("ygg_dns_enabled", enabled).apply()
+        prefs.yggDnsEnabled = enabled
     }
-
-    // -------------------------------------------------------------------------
-    // Yggdrasil network
-    // -------------------------------------------------------------------------
 
     /** Ping the AWG server's Yggdrasil address through the overlay. */
     fun pingAwgServer() {
         if (YggNetworkState.pinging.value) return
         val endpoint = _awgConfig.value?.endpoint ?: return
-        // Extract IPv6 address from "[addr]:port" endpoint
-        val addrBytes = parseYggAddrBytes(endpoint) ?: return
-        val addrStr   = try {
-            java.net.Inet6Address.getByAddress(addrBytes).hostAddress ?: return
-        } catch (_: Exception) { return }
+        val addrBytes = parseIpv6Bytes(endpoint) ?: return
+        val addr = runCatching { Inet6Address.getByAddress(addrBytes).hostAddress }
+            .getOrNull() ?: return
 
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) {
             YggNetworkState.pinging.value = true
-            YggNetworkState.pingMs.value  = null
-            val mgr = YggNetworkState.manager
-            val ms  = mgr?.pingYgg(addrStr)
-            YggNetworkState.pingMs.value  = ms ?: -1L
+            YggNetworkState.pingMs.value = null
+            YggNetworkState.pingMs.value = YggNetworkState.manager?.pingYgg(addr) ?: -1L
             YggNetworkState.pinging.value = false
         }
     }
 
-    private fun savePeers(peers: Set<String>) {
-        prefs.edit().putStringSet("selected_peers", peers).apply()
-    }
+    private fun savePeers(peers: Set<String>) { prefs.selectedPeers = peers }
 
     private fun loadSavedPeers() {
-        val saved = prefs.getStringSet("selected_peers", null) ?: return
-        _selectedPeers.value = saved
+        _selectedPeers.value = prefs.selectedPeers
     }
 }

@@ -11,17 +11,13 @@ import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import androidx.core.content.ContextCompat
 import net.holowbark.AppLogger
+import net.holowbark.MainActivity
+import net.holowbark.R
 
 /**
- * Quick Settings tile for toggling the Holowbark VPN from the Android notification panel.
- *
- * Add to the device's Quick Settings by long-pressing the panel → Edit → drag "Holowbark" tile.
- *
- * Behaviour:
- *   - Tap when connected/connecting → disconnect immediately
- *   - Tap when inactive, config+peers saved, VPN permission granted → start VPN directly
- *   - Tap when inactive, missing config or permission not granted → open the app
- *   - Long press → opens the app (via android:settingsActivity in the manifest)
+ * Quick Settings tile. Tapping it stops a running tunnel, starts one when the
+ * config, the peers and the VPN permission are all already in place, and otherwise
+ * opens the app so the user can supply what is missing.
  */
 class VpnTileService : TileService() {
 
@@ -32,37 +28,17 @@ class VpnTileService : TileService() {
     @Volatile private var currentState = VpnState.IDLE
     private var receiver: BroadcastReceiver? = null
 
-    // -------------------------------------------------------------------------
-    // TileService lifecycle
-    // -------------------------------------------------------------------------
-
     override fun onStartListening() {
-        // Restore last known VPN state from SharedPrefs so the tile
-        // shows the correct state immediately without waiting for a broadcast.
-        // Prefs go stale after process death/reboot — trust them only while
-        // the service is actually running.
-        val savedState = if (TunnelService.isRunning) {
-            getSharedPreferences("holowbark", Context.MODE_PRIVATE)
-                .getString("vpn_state", null)
-        } else null
-        val state = savedState
-            ?.let { runCatching { VpnState.valueOf(it) }.getOrNull() }
-            ?: VpnState.IDLE
-        currentState = state
-        qsTile?.let { tile ->
-            tile.state = when (state) {
-                VpnState.CONNECTED, VpnState.CONNECTING -> Tile.STATE_ACTIVE
-                VpnState.ERROR -> Tile.STATE_UNAVAILABLE
-                else -> Tile.STATE_INACTIVE
-            }
-            tile.updateTile()
-        }
+        // Prefs survive process death, so they are only trustworthy while the
+        // service is still up in this process.
+        currentState = if (TunnelService.isRunning) Prefs.of(this).vpnState() else VpnState.IDLE
+        render(TunnelStatus(overall = currentState))
 
         val r = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
                 val status = TunnelStatus.fromIntent(intent) ?: return
                 currentState = status.overall
-                updateTile(status)
+                render(status)
             }
         }
         ContextCompat.registerReceiver(
@@ -81,65 +57,40 @@ class VpnTileService : TileService() {
         receiver = null
     }
 
-    // -------------------------------------------------------------------------
-    // Click handler
-    // -------------------------------------------------------------------------
-
     override fun onClick() {
         unlockAndRun {
-            val stoppable = currentState == VpnState.CONNECTED ||
-                currentState == VpnState.CONNECTING || currentState == VpnState.ERROR
-            if (stoppable && TunnelService.isRunning) {
-                AppLogger.d(TAG,"Tile: stopping VPN")
-                // Plain startService: the service is running, and stopVpn() never
-                // calls startForeground(), so startForegroundService would risk
-                // an FGS-did-not-start crash.
-                startService(
-                    Intent(this, TunnelService::class.java)
-                        .setAction(TunnelService.ACTION_STOP)
-                )
+            if (TunnelService.isRunning) {
+                AppLogger.d(TAG, "Tile: stopping VPN")
+                // Plain startService, not startForegroundService: the service is
+                // already running and its stop path never calls startForeground(),
+                // which would then trip the FGS-did-not-start watchdog.
+                startService(TunnelService.stopIntent(this))
             } else {
-                tryStartVpnOrOpenApp()
+                startVpnOrOpenApp()
             }
         }
     }
 
-    /**
-     * If VPN permission is granted and saved config+peers exist, start the VPN directly.
-     * Otherwise open the app so the user can grant permission or configure the VPN.
-     */
-    private fun tryStartVpnOrOpenApp() {
-        val prefs = getSharedPreferences("holowbark", Context.MODE_PRIVATE)
-        val awgConf = prefs.getString("awg_conf", null)
-        val peers   = prefs.getStringSet("selected_peers", null)?.toList() ?: emptyList()
+    private fun startVpnOrOpenApp() {
+        val prefs = Prefs.of(this)
+        val awgConf = prefs.awgConf
+        val peers = prefs.selectedPeers.toList()
+        val needsPermission = VpnService.prepare(this) != null
 
-        val permissionNeeded = VpnService.prepare(this) != null
-
-        if (!permissionNeeded && awgConf != null && peers.isNotEmpty()) {
-            val yggKey = prefs.getString("ygg_private_key", null)?.takeIf { it.length == 128 }
-                ?: run {
-                    val kp = java.security.KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
-                    val seed = kp.private.encoded.sliceArray(16..47)
-                    val pub  = kp.public.encoded.sliceArray(12..43)
-                    val hex = (seed + pub).joinToString("") { "%02x".format(it) }
-                    prefs.edit().putString("ygg_private_key", hex).apply()
-                    hex
-                }
-            AppLogger.d(TAG,"Tile: starting VPN directly (${peers.size} peers)")
-            startForegroundService(Intent(this, TunnelService::class.java).apply {
-                action = TunnelService.ACTION_START
-                putStringArrayListExtra(TunnelService.EXTRA_YGG_PEERS, ArrayList(peers))
-                putExtra(TunnelService.EXTRA_AWG_CONF, awgConf)
-                putExtra(TunnelService.EXTRA_YGG_KEY, yggKey)
-            })
-        } else {
-            AppLogger.d(TAG,"Tile: opening app (permNeeded=$permissionNeeded conf=${awgConf != null} peers=${peers.size})")
+        if (needsPermission || awgConf == null || peers.isEmpty()) {
+            AppLogger.d(TAG, "Tile: opening app " +
+                "(permission=$needsPermission conf=${awgConf != null} peers=${peers.size})")
             openApp()
+            return
         }
+        AppLogger.d(TAG, "Tile: starting VPN directly (${peers.size} peers)")
+        startForegroundService(
+            TunnelService.startIntent(this, peers, awgConf, prefs.yggPrivateKey())
+        )
     }
 
     private fun openApp() {
-        val intent = Intent(this, net.holowbark.MainActivity::class.java).apply {
+        val intent = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -154,30 +105,30 @@ class VpnTileService : TileService() {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Tile rendering
-    // -------------------------------------------------------------------------
-
-    private fun updateTile(status: TunnelStatus) {
+    private fun render(status: TunnelStatus) {
         val tile = qsTile ?: return
+        // ERROR stays INACTIVE rather than UNAVAILABLE: an unavailable tile cannot
+        // be tapped, which would trap the user with no way to stop a failed tunnel.
         tile.state = when (status.overall) {
-            VpnState.CONNECTED  -> Tile.STATE_ACTIVE
-            VpnState.CONNECTING -> Tile.STATE_ACTIVE
-            VpnState.ERROR      -> Tile.STATE_UNAVAILABLE
-            else                -> Tile.STATE_INACTIVE
+            VpnState.CONNECTED, VpnState.CONNECTING -> Tile.STATE_ACTIVE
+            else                                    -> Tile.STATE_INACTIVE
         }
-        tile.label = "Holowbark"
-        tile.contentDescription = when (status.overall) {
-            VpnState.CONNECTED  -> "Holowbark VPN connected"
-            VpnState.CONNECTING -> "Holowbark VPN connecting"
-            VpnState.ERROR      -> "Holowbark VPN error"
-            else                -> "Holowbark VPN off"
-        }
+        tile.label = getString(R.string.app_name)
+        tile.contentDescription = getString(when (status.overall) {
+            VpnState.CONNECTED  -> R.string.tile_connected
+            VpnState.CONNECTING -> R.string.tile_connecting
+            VpnState.ERROR      -> R.string.tile_error
+            else                -> R.string.tile_off
+        })
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            tile.subtitle = when (status.overall) {
-                VpnState.CONNECTED  -> if (status.yggPeers > 0) "${status.yggPeers} peers" else "ON"
-                VpnState.CONNECTING -> "…"
-                else                -> "OFF"
+            tile.subtitle = when {
+                status.overall == VpnState.CONNECTED && status.yggPeers > 0 ->
+                    resources.getQuantityString(
+                        R.plurals.tile_peers, status.yggPeers, status.yggPeers)
+                status.overall == VpnState.CONNECTED  -> getString(R.string.tile_on_short)
+                status.overall == VpnState.CONNECTING -> "…"
+                status.overall == VpnState.ERROR      -> getString(R.string.tile_error_short)
+                else                                  -> getString(R.string.tile_off_short)
             }
         }
         tile.updateTile()
