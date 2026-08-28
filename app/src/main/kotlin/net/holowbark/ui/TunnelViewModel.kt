@@ -12,7 +12,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.holowbark.config.AwgConfig
 import net.holowbark.config.parseAwgConf
 import net.holowbark.config.toConfString
@@ -23,10 +25,15 @@ import net.holowbark.peers.models.Peer
 import net.holowbark.vpn.TunnelStatus
 import net.holowbark.vpn.VpnState
 import net.holowbark.vpn.YggNetworkState
+import net.holowbark.vpn.PeerUriError
+import net.holowbark.vpn.PeerUriException
 import net.holowbark.vpn.Prefs
+import net.holowbark.vpn.parsePeerUri
 import net.holowbark.vpn.TunnelService
 import net.holowbark.vpn.parseIpv6Bytes
 import java.net.Inet6Address
+
+private const val RESTART_TEARDOWN_TIMEOUT_MS = 3_000L
 
 class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs.of(app)
@@ -155,10 +162,32 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
         savePeers(current)
     }
 
+    /**
+     * Add a peer the user typed. Returns the parse error to show under the field,
+     * or null once the peer is stored.
+     */
+    fun addCustomPeer(input: String): PeerUriError? {
+        val uri = parsePeerUri(input).getOrElse {
+            return (it as PeerUriException).error
+        }
+        val canonical = uri.toString()
+        if (canonical !in _selectedPeers.value) togglePeer(canonical)
+        return null
+    }
+
+    /**
+     * Restart the tunnel so a changed peer list takes effect. The service is given
+     * time to tear down first: [connect] on a service that is still stopping is
+     * rejected by the duplicate-start guard, leaving the tunnel down.
+     */
     fun applySelectedPeers() {
-        if (_tunnelStatus.value.overall == VpnState.CONNECTED ||
-            _tunnelStatus.value.overall == VpnState.CONNECTING) {
+        val state = _tunnelStatus.value.overall
+        if (state != VpnState.CONNECTED && state != VpnState.CONNECTING) return
+        viewModelScope.launch {
             disconnect()
+            withTimeoutOrNull(RESTART_TEARDOWN_TIMEOUT_MS) {
+                while (TunnelService.isRunning) delay(50)
+            }
             connect()
         }
     }

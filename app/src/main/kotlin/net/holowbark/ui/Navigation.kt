@@ -20,6 +20,7 @@ import java.net.URLEncoder
 private object Routes {
     const val HOME      = "home"
     const val IMPORT    = "import"
+    const val SELECTED  = "selected"
     const val COUNTRIES = "countries"
     const val PEERS     = "peers/{countryKey}"
     const val NETWORK   = "network"
@@ -48,7 +49,7 @@ fun AppNavHost(
                 )
                 NavigationBarItem(
                     selected = currentRoute == Routes.COUNTRIES,
-                    onClick  = { navController.navigateSingleTop(Routes.COUNTRIES) },
+                    onClick  = { navController.navigateSingleTop(Routes.SELECTED) },
                     icon     = { Icon(Icons.Default.Language, "Peers") },
                     label    = { Text("Peers") },
                 )
@@ -83,12 +84,19 @@ fun AppNavHost(
                     vm = vm,
                     onRequestVpnPermission = onRequestVpnPermission,
                     onNavigateImport    = { navController.navigate(Routes.IMPORT) },
-                    onNavigateCountries = { navController.navigate(Routes.COUNTRIES) },
+                    onNavigateCountries = { navController.navigate(Routes.SELECTED) },
                     onRestartAwg        = vm::restartAwg,
                 )
             }
             composable(Routes.IMPORT) {
                 ImportScreen(vm = vm, onImported = { navController.popBackStack() })
+            }
+            composable(Routes.SELECTED) {
+                SelectedPeersScreen(
+                    vm = vm,
+                    onBrowsePublic = { navController.navigate(Routes.COUNTRIES) },
+                    onBack = { navController.popBackStack() },
+                )
             }
             composable(Routes.COUNTRIES) {
                 CountryBrowserScreen(
