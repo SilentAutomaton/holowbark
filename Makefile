@@ -151,7 +151,7 @@ clone-deps:
 
 help:
 	@echo ""
-	@echo "YggAWG Android — Make targets"
+	@echo "Holowbark Android — Make targets"
 	@echo ""
 	@echo "  make setup          First-time setup (SDK + gomobile + clone repos)"
 	@echo "  make aar            Build holowbark.aar (Yggdrasil + AmneziaWG)"

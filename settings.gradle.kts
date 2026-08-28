@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "YggAWG"
+rootProject.name = "Holowbark"
 include(":app")
