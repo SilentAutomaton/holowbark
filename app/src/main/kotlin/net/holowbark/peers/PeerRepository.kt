@@ -1,7 +1,6 @@
 package net.holowbark.peers
 
 import android.content.Context
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -12,33 +11,29 @@ import net.holowbark.peers.models.Peer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
+import net.holowbark.AppLogger
 
 /**
- * Port of fetch.py.
+ * The list of Yggdrasil public peers, cached in Room.
  *
- * publicnodes.json structure (critical — missed in original port):
+ * publicnodes.json is keyed by the *.md filename of the country page, not by peer
+ * address — that is the shape the parser has to handle:
  * ```json
  * {
  *   "russia.md": {
- *     "tls://1.2.3.4:12345": { "up": true, "response_ms": 42, "last_seen": 1712... },
- *     ...
+ *     "tls://1.2.3.4:12345": { "up": true, "response_ms": 42, "last_seen": 1712000000 }
  *   },
- *   "germany.md": { ... }
+ *   "germany.md": { }
  * }
  * ```
- * Keys at the top level are *.md filenames, NOT peer addresses.
+ * The region each file belongs to comes from a separate GitHub tree listing, and
+ * the two are joined into a country key such as "europe/russia".
  *
- * Region mapping (from GitHub tree API):
- *   "russia.md"  → region "europe"  → country key "europe/russia"
- *   "germany.md" → region "europe"  → country key "europe/germany"
- *
- * Fallback chain on network failure:
- *   1. Network fetch (publicnodes.json + GitHub region map)
- *   2. Latest saved snapshot (peers_snap.json in filesDir)
- *   3. Bundled res/raw/fallback_peers.json
+ * On network failure the last saved snapshot is used, and failing that the peer
+ * list bundled with the APK, so a first run with no connectivity still offers
+ * something to connect through.
  */
 class PeerRepository(private val db: PeerDatabase, private val context: Context) {
-
     companion object {
         private const val TAG = "PeerRepository"
         private const val NODES_URL =
@@ -62,12 +57,8 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    // ponytail: cached in memory for the lifetime of this instance; region map is static
+    // The region layout changes about once a year, so one fetch per process is plenty.
     private var regionMapCache: Map<String, String>? = null
-
-    // -------------------------------------------------------------------------
-    // Public API
-    // -------------------------------------------------------------------------
 
     suspend fun getCountries(forceRefresh: Boolean = false): List<CountryInfo> {
         ensureCacheFresh(forceRefresh)
@@ -81,10 +72,6 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         return db.peerDao().getByCountry(countryKey)
     }
 
-    // -------------------------------------------------------------------------
-    // Cache
-    // -------------------------------------------------------------------------
-
     private suspend fun ensureCacheFresh(force: Boolean) {
         val latest = db.peerDao().getLatestCacheTime()
         val stale = latest == null || System.currentTimeMillis() - latest > CACHE_TTL_MS
@@ -94,10 +81,10 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
     suspend fun fetchAndCache(): Int = withContext(Dispatchers.IO) {
         try {
             val regionMap = regionMapCache ?: buildRegionMap().also { regionMapCache = it }
-            Log.d(TAG, "Region map: ${regionMap.size} files")
+            AppLogger.d(TAG, "Region map: ${regionMap.size} files")
             val nodesText = fetchUrl(NODES_URL)
             val peers = parseNodes(nodesText, regionMap)
-            Log.d(TAG, "Parsed ${peers.size} peers from ${peers.map { it.country }.toSet().size} countries")
+            AppLogger.d(TAG, "Parsed ${peers.size} peers from ${peers.map { it.country }.toSet().size} countries")
             if (peers.isNotEmpty()) {
                 db.peerDao().deleteAll()
                 db.peerDao().insertAll(peers)
@@ -105,17 +92,17 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
             }
             peers.size
         } catch (e: Exception) {
-            Log.w(TAG, "Network fetch failed, trying snapshot: $e")
+            AppLogger.w(TAG, "Network fetch failed, trying snapshot: $e")
             val snap = loadSnapshot()
             if (snap != null) {
-                Log.d(TAG, "Loaded snapshot: ${snap.size} peers")
+                AppLogger.d(TAG, "Loaded snapshot: ${snap.size} peers")
                 db.peerDao().deleteAll()
                 db.peerDao().insertAll(snap)
                 snap.size
             } else {
-                Log.w(TAG, "No snapshot available, loading bundled fallback")
+                AppLogger.w(TAG, "No snapshot available, loading bundled fallback")
                 val fallback = loadFallbackPeers()
-                Log.d(TAG, "Bundled fallback: ${fallback.size} peers")
+                AppLogger.d(TAG, "Bundled fallback: ${fallback.size} peers")
                 db.peerDao().deleteAll()
                 db.peerDao().insertAll(fallback)
                 fallback.size
@@ -123,18 +110,14 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Snapshot: single file in filesDir
-    // -------------------------------------------------------------------------
-
     private fun saveSnapshot(peers: List<Peer>) {
         try {
             context.openFileOutput(SNAP_FILE, Context.MODE_PRIVATE).use { out ->
                 out.write(json.encodeToString(peers).toByteArray(Charsets.UTF_8))
             }
-            Log.d(TAG, "Saved snapshot (${peers.size} peers)")
+            AppLogger.d(TAG, "Saved snapshot (${peers.size} peers)")
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to save snapshot: $e")
+            AppLogger.w(TAG, "Failed to save snapshot: $e")
         }
     }
 
@@ -151,14 +134,9 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         return parseNodes(text, emptyMap())
     }
 
-    // -------------------------------------------------------------------------
-    // Parsing
-    // -------------------------------------------------------------------------
-
     /**
-     * Build {filename → region} from GitHub tree.
-     * Tree contains paths like "europe/russia.md" → filename="russia.md", region="europe".
-     * Only direct children of a region directory (path.count('/') == 1) are included.
+     * Maps each country page filename to its region, from tree paths like
+     * "europe/russia.md". Only direct children of a region directory count.
      */
     private suspend fun buildRegionMap(): Map<String, String> =
         withContext(Dispatchers.IO) {
@@ -177,22 +155,16 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "GitHub tree fetch failed: $e")
+                AppLogger.w(TAG, "GitHub tree fetch failed: $e")
                 emptyMap()
             }
         }
 
-    /**
-     * Parse publicnodes.json.
-     *
-     * Top-level keys are *.md filenames, NOT peer addresses.
-     * Values are maps of {peer_address → {up, response_ms, last_seen}}.
-     */
-    private fun parseNodes(nodesText: String, regionMap: Map<String, String>): List<Peer> {
+    internal fun parseNodes(nodesText: String, regionMap: Map<String, String>): List<Peer> {
         val root = try {
             json.parseToJsonElement(nodesText).jsonObject
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse nodes JSON: $e")
+            AppLogger.e(TAG, "Failed to parse nodes JSON: $e")
             return emptyList()
         }
 

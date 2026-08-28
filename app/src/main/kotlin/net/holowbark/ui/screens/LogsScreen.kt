@@ -1,13 +1,8 @@
 package net.holowbark.ui.screens
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
@@ -16,10 +11,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import net.holowbark.AppLogger
+import net.holowbark.ui.MonospaceLine
+import net.holowbark.ui.copyToClipboard
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,11 +34,9 @@ fun LogsScreen() {
                 title = { Text("Logs") },
                 actions = {
                     IconButton(onClick = {
-                        val text = lines.joinToString("\n") { l ->
-                            "${l.time} ${l.level}/${l.tag}: ${l.msg}"
-                        }
-                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("Holowbark logs", text))
+                        ctx.copyToClipboard("Holowbark logs", lines.joinToString("\n") {
+                            "${it.time} ${it.level}/${it.tag}: ${it.msg}"
+                        })
                     }) {
                         Icon(Icons.Default.ContentCopy, contentDescription = "Copy logs")
                     }
@@ -78,22 +71,14 @@ fun LogsScreen() {
 
 @Composable
 private fun LogLine(line: AppLogger.Line) {
-    val color = when (line.level) {
-        AppLogger.Level.E -> Color(0xFFFF6B6B)
-        AppLogger.Level.W -> Color(0xFFFFD93D)
-        AppLogger.Level.I -> Color(0xFFFFFFFF)
-        AppLogger.Level.D -> Color(0xFFAAAAAA)
-        AppLogger.Level.V -> Color(0xFF666666)
-    }
-    val hScroll = rememberScrollState()
-    Text(
+    MonospaceLine(
         text = "${line.time} ${line.level}/${line.tag}: ${line.msg}",
-        color = color,
-        fontFamily = FontFamily.Monospace,
-        fontSize = 11.sp,
-        lineHeight = 14.sp,
-        maxLines = 1,
-        softWrap = false,
-        modifier = Modifier.horizontalScroll(hScroll),
+        color = when (line.level) {
+            AppLogger.Level.E -> Color(0xFFFF6B6B)
+            AppLogger.Level.W -> Color(0xFFFFD93D)
+            AppLogger.Level.I -> Color(0xFFFFFFFF)
+            AppLogger.Level.D -> Color(0xFFAAAAAA)
+            AppLogger.Level.V -> Color(0xFF666666)
+        },
     )
 }

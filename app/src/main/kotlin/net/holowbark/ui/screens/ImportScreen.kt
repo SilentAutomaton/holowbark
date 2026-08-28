@@ -39,7 +39,7 @@ fun ImportScreen(
     var errorText by remember { mutableStateOf<String?>(null) }
     val awgConfig     by vm.awgConfig.collectAsState()
     val rawConf       by vm.rawConfText.collectAsState()
-    val protocolLabel = if (awgConfig?.isAwg == true) "AmneziaWG" else "WireGuard"
+    val protocolName = awgConfig?.protocolName ?: "WireGuard"
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -72,7 +72,7 @@ fun ImportScreen(
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("$protocolLabel Config") }) }
+        topBar = { TopAppBar(title = { Text("$protocolName Config") }) }
     ) { padding ->
         Column(
             modifier = Modifier

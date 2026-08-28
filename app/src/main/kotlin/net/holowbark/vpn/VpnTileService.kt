@@ -1,5 +1,6 @@
 package net.holowbark.vpn
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -20,7 +21,6 @@ import net.holowbark.R
  * opens the app so the user can supply what is missing.
  */
 class VpnTileService : TileService() {
-
     companion object {
         private const val TAG = "VpnTileService"
     }
@@ -101,6 +101,7 @@ class VpnTileService : TileService() {
             startActivityAndCollapse(pi)
         } else {
             @Suppress("DEPRECATION")
+            @SuppressLint("StartActivityAndCollapseDeprecated")
             startActivityAndCollapse(intent)
         }
     }

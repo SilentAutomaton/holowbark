@@ -36,9 +36,7 @@ class YggdrasilManager(
     private val pendingPings = ConcurrentHashMap<Int, Pair<CompletableDeferred<Unit>, Long>>()
     @Volatile private var pingSeq = 0
 
-    // -------------------------------------------------------------------------
     // Start / stop
-    // -------------------------------------------------------------------------
 
     fun start(peers: List<String>, privateKey: String = "", multicast: Boolean = false) {
         if (ygg != null) return
@@ -89,9 +87,7 @@ class YggdrasilManager(
 
     fun getAddress(): String = runCatching { ygg?.addressString }.getOrNull() ?: ""
 
-    // -------------------------------------------------------------------------
     // Ping (ICMPv6 Echo via Yggdrasil overlay)
-    // -------------------------------------------------------------------------
 
     /**
      * Send an ICMPv6 Echo Request to [destAddrStr] through the Yggdrasil overlay
@@ -128,9 +124,7 @@ class YggdrasilManager(
         }
     }
 
-    // -------------------------------------------------------------------------
     // Read loop
-    // -------------------------------------------------------------------------
 
     private fun readLoop(inst: Yggdrasil) {
         AppLogger.d(TAG, "readLoop started")
@@ -184,9 +178,7 @@ class YggdrasilManager(
         AppLogger.d(TAG, "readLoop exited")
     }
 
-    // -------------------------------------------------------------------------
     // Peer polling
-    // -------------------------------------------------------------------------
 
     private suspend fun pollPeers(inst: Yggdrasil) {
         var lastCount = -1
@@ -235,8 +227,6 @@ class YggdrasilManager(
         AppLogger.w(TAG, "parsePeers: $e")
         emptyList()
     }
-
-    // -------------------------------------------------------------------------
 
     private fun buildConfig(peers: List<String>, privateKey: String,
                             multicast: Boolean = false): JSONObject {

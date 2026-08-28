@@ -1,8 +1,5 @@
 package net.holowbark.ui.screens
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,8 +22,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import net.holowbark.ui.TunnelViewModel
 import net.holowbark.vpn.YggNetworkState
-import net.holowbark.vpn.TunnelService
 import kotlin.math.abs
+import net.holowbark.ui.copyToClipboard
+import net.holowbark.ui.latencyColor
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,7 +49,6 @@ fun YggNetworkScreen(vm: TunnelViewModel) {
                 .padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // ── Self address ──────────────────────────────────────────────────
             item {
                 SectionCard(title = "My Address") {
                     Column(modifier = Modifier.padding(8.dp),
@@ -67,8 +64,7 @@ fun YggNetworkScreen(vm: TunnelViewModel) {
                                     modifier = Modifier.weight(1f),
                                 )
                                 IconButton(onClick = {
-                                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    cm.setPrimaryClip(ClipData.newPlainText("Yggdrasil address", selfAddr))
+                                    ctx.copyToClipboard("Yggdrasil address", selfAddr)
                                 }) {
                                     Icon(Icons.Default.ContentCopy, "Copy address",
                                         modifier = Modifier.size(18.dp))
@@ -98,10 +94,9 @@ fun YggNetworkScreen(vm: TunnelViewModel) {
                 }
             }
 
-            // ── AWG server ping ───────────────────────────────────────────────
             item {
                 val endpoint = awgConf?.endpoint
-                SectionCard(title = "${if (awgConf?.isAwg == true) "AWG" else "WireGuard"} Server Ping") {
+                SectionCard(title = "${awgConf?.protocolName ?: "WireGuard"} Server Ping") {
                     Column(modifier = Modifier.padding(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (endpoint == null) {
@@ -134,20 +129,17 @@ fun YggNetworkScreen(vm: TunnelViewModel) {
                                 }
                             }
                             pingMs?.let { ms ->
-                                val (text, color) = when {
-                                    ms < 0   -> "Timeout" to MaterialTheme.colorScheme.error
-                                    ms < 100 -> "${ms}ms" to Color(0xFF4CAF50)
-                                    ms < 300 -> "${ms}ms" to Color(0xFFFFD93D)
-                                    else     -> "${ms}ms" to MaterialTheme.colorScheme.error
-                                }
-                                Text(text, color = color, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    text = if (ms < 0) "Timeout" else "${ms}ms",
+                                    color = latencyColor(ms),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                )
                             }
                         }
                     }
                 }
             }
 
-            // ── Yggdrasil DNS ─────────────────────────────────────────────────
             item {
                 SectionCard(title = "Yggdrasil DNS") {
                     Column(modifier = Modifier.padding(8.dp),
@@ -175,7 +167,6 @@ fun YggNetworkScreen(vm: TunnelViewModel) {
                 }
             }
 
-            // ── Peers ─────────────────────────────────────────────────────────
             val sortedPeers = peers.sortedByDescending { it.up }
             item {
                 val upCount = peers.count { it.up }
@@ -192,15 +183,13 @@ fun YggNetworkScreen(vm: TunnelViewModel) {
             }
 
             items(sortedPeers, key = { it.uri }) { peer ->
-                PeerRow(peer, onRemove = { vm.removePeer(peer.uri) })
+                LivePeerRow(peer, onRemove = { vm.removePeer(peer.uri) })
             }
 
             item { Spacer(Modifier.height(8.dp)) }
         }
     }
 }
-
-// ─── Section card ─────────────────────────────────────────────────────────────
 
 @Composable
 private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
@@ -218,10 +207,8 @@ private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Un
     }
 }
 
-// ─── Peer row ─────────────────────────────────────────────────────────────────
-
 @Composable
-private fun PeerRow(peer: YggNetworkState.PeerInfo, onRemove: () -> Unit) {
+private fun LivePeerRow(peer: YggNetworkState.PeerInfo, onRemove: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -323,8 +310,6 @@ private fun StatChip(text: String) {
         fontSize = 10.sp,
     )
 }
-
-// ─── Formatters ───────────────────────────────────────────────────────────────
 
 private fun Double.fmtMs() = when {
     this < 1.0  -> "<1ms"

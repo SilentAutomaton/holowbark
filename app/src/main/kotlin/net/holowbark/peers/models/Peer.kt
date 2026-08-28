@@ -32,8 +32,11 @@ data class CountryInfo(
     val upPeers: Int,
 ) {
     val regionSlug: String get() = countryKey.substringBefore('/')
-    val countrySlug: String get() = countryKey.substringAfter('/')
-    val displayName: String get() = countrySlug
-        .replace('-', ' ')
-        .replaceFirstChar { it.uppercaseChar() }
+    val displayName: String get() = countryDisplayName(countryKey)
 }
+
+/** "europe/united-kingdom" → "United kingdom". */
+fun countryDisplayName(countryKey: String): String = countryKey
+    .substringAfter('/')
+    .replace('-', ' ')
+    .replaceFirstChar { it.uppercaseChar() }

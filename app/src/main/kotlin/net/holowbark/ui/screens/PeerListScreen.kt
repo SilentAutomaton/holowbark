@@ -15,6 +15,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import net.holowbark.peers.models.Peer
 import net.holowbark.ui.TunnelViewModel
+import net.holowbark.peers.models.countryDisplayName
+import net.holowbark.ui.latencyColor
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -30,9 +32,7 @@ fun PeerListScreen(
         vm.loadPeersForCountry(countryKey)
     }
 
-    val countryLabel = countryKey.substringAfter('/')
-        .replace('-', ' ')
-        .replaceFirstChar { it.uppercaseChar() }
+    val countryLabel = countryDisplayName(countryKey)
 
     val upCount = peers.count { it.up }
 
@@ -76,7 +76,7 @@ fun PeerListScreen(
         } else {
             LazyColumn(contentPadding = padding) {
                 items(peers.sortedWith(compareBy(nullsLast()) { it.responseMs }), key = { it.address }) { peer ->
-                    PeerRow(
+                    PublicPeerRow(
                         peer = peer,
                         selected = peer.address in selectedPeers,
                         onToggle = { vm.togglePeer(peer.address) },
@@ -89,7 +89,7 @@ fun PeerListScreen(
 }
 
 @Composable
-private fun PeerRow(peer: Peer, selected: Boolean, onToggle: () -> Unit) {
+private fun PublicPeerRow(peer: Peer, selected: Boolean, onToggle: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -135,11 +135,7 @@ private fun PeerRow(peer: Peer, selected: Boolean, onToggle: () -> Unit) {
                 Text(
                     text = "${it}ms",
                     style = MaterialTheme.typography.labelSmall,
-                    color = when {
-                        it < 100 -> MaterialTheme.colorScheme.primary
-                        it < 300 -> MaterialTheme.colorScheme.secondary
-                        else     -> MaterialTheme.colorScheme.error
-                    }
+                    color = latencyColor(it),
                 )
             }
         }

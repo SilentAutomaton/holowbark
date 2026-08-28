@@ -5,7 +5,6 @@ import net.holowbark.peers.models.Peer
 
 @Dao
 interface PeerDao {
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(peers: List<Peer>)
 

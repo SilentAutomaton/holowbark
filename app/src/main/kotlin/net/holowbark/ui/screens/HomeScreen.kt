@@ -36,7 +36,7 @@ fun HomeScreen(
         )
     }
 
-    val protocolLabel = if (awgConfig?.isAwg == true) "AmneziaWG" else "WireGuard"
+    val protocolName  = awgConfig?.protocolName ?: "WireGuard"
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     Scaffold(
@@ -49,53 +49,23 @@ fun HomeScreen(
             )
         }
     ) { padding ->
+        val status = @Composable { LayerStatusCard(tunnelStatus, protocolName, onRestartAwg) }
+        val setup = @Composable {
+            AwgConfigCard(protocolName, awgConfig?.endpoint, onNavigateImport)
+            PeersCard(selectedPeers.size, onNavigateCountries)
+        }
+        val outer = Modifier.fillMaxSize().padding(padding)
+        // A phone on its side has no vertical room for three stacked cards, so
+        // landscape puts the status beside the setup cards instead of above them.
         if (isLandscape) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    LayerStatusCard(tunnelStatus, protocolLabel, onRestartAwg)
-                }
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    AwgConfigCard(
-                        protocolLabel = protocolLabel,
-                        endpoint = awgConfig?.endpoint,
-                        onImportClick = onNavigateImport,
-                    )
-                    PeersCard(
-                        selectedCount = selectedPeers.size,
-                        onBrowseClick = onNavigateCountries,
-                    )
-                }
+            Row(outer.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f)) { status() }
+                Column(Modifier.weight(1f), Arrangement.spacedBy(12.dp)) { setup() }
             }
         } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                LayerStatusCard(tunnelStatus, protocolLabel, onRestartAwg)
-                AwgConfigCard(
-                    protocolLabel = protocolLabel,
-                    endpoint = awgConfig?.endpoint,
-                    onImportClick = onNavigateImport,
-                )
-                PeersCard(
-                    selectedCount = selectedPeers.size,
-                    onBrowseClick = onNavigateCountries,
-                )
+            Column(outer.padding(24.dp), Arrangement.spacedBy(16.dp)) {
+                status()
+                setup()
             }
         }
     }
@@ -134,7 +104,7 @@ private fun ConnectFab(
 }
 
 @Composable
-private fun LayerStatusCard(status: TunnelStatus, protocolLabel: String, onRestartAwg: () -> Unit) {
+private fun LayerStatusCard(status: TunnelStatus, protocolName: String, onRestartAwg: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             // Overall label
@@ -168,7 +138,7 @@ private fun LayerStatusCard(status: TunnelStatus, protocolLabel: String, onResta
 
             // tunnel layer row
             LayerRow(
-                label = protocolLabel,
+                label = protocolName,
                 state = status.awg,
                 detail = when (status.awg) {
                     LayerState.STARTING -> if (status.ygg == LayerState.UP)
@@ -195,7 +165,7 @@ private fun LayerStatusCard(status: TunnelStatus, protocolLabel: String, onResta
                 ) {
                     Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Restart $protocolLabel")
+                    Text("Restart $protocolName")
                 }
             }
         }
@@ -237,10 +207,10 @@ private fun LayerRow(label: String, state: LayerState, detail: String?) {
 }
 
 @Composable
-private fun AwgConfigCard(protocolLabel: String, endpoint: String?, onImportClick: () -> Unit) {
+private fun AwgConfigCard(protocolName: String, endpoint: String?, onImportClick: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("$protocolLabel Config", style = MaterialTheme.typography.titleSmall)
+            Text("$protocolName Config", style = MaterialTheme.typography.titleSmall)
             if (endpoint != null) {
                 Text(endpoint, style = MaterialTheme.typography.bodyMedium)
             } else {

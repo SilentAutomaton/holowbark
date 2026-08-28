@@ -106,8 +106,6 @@ class AwgManager(
         }
     }
 
-    // -------------------------------------------------------------------------
-
     private fun readLoop(b: Backend, scope: CoroutineScope) {
         var firstPacket = true
         while (scope.isActive && backend != null) {
@@ -131,9 +129,7 @@ class AwgManager(
         }
     }
 
-    // -------------------------------------------------------------------------
     // UAPI settings builder
-    // -------------------------------------------------------------------------
 
     /**
      * Build a WireGuard/AmneziaWG UAPI config string using the official

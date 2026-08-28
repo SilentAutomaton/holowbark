@@ -7,7 +7,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
  * Avoids the need for a bound service connection.
  */
 object YggNetworkState {
-
     data class PeerInfo(
         val uri: String,
         val up: Boolean,

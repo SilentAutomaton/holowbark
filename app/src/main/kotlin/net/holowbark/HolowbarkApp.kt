@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 
 class HolowbarkApp : Application() {
-
     companion object {
         // v2: IMPORTANCE_DEFAULT (visible in main section), no sound set on channel
         const val VPN_NOTIF_CHANNEL = "vpn_status_v2"

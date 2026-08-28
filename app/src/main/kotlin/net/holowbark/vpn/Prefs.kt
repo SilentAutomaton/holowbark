@@ -12,7 +12,6 @@ import android.content.SharedPreferences
  * [TunnelService.isRunning] before trusting them.
  */
 class Prefs(private val prefs: SharedPreferences) {
-
     companion object {
         private const val FILE = "holowbark"
 

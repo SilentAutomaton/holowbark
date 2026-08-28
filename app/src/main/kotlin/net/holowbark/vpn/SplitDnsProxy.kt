@@ -40,6 +40,8 @@ class SplitDnsProxy(
 ) {
     companion object {
         private const val TAG = "SplitDnsProxy"
+        /** RFC 2544 benchmarking range: routable nowhere, so it cannot collide. */
+        const val PROXY_ADDRESS = "198.18.0.53"
         val PROXY_IP: ByteArray = byteArrayOf(198.toByte(), 18, 0, 53)
         private const val YGG_SRC_PORT = 55353
         private const val TIMEOUT_MS = 4000

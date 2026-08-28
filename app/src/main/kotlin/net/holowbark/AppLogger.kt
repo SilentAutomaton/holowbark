@@ -14,7 +14,6 @@ import java.util.Locale
  * network.
  */
 object AppLogger {
-
     enum class Level { V, D, I, W, E }
 
     data class Line(val time: String, val level: Level, val tag: String, val msg: String)

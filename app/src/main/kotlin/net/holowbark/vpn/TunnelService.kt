@@ -14,6 +14,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.VpnService
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
@@ -37,10 +38,11 @@ import java.net.Inet6Address
 import java.net.InetAddress
 
 class TunnelService : VpnService() {
-
     companion object {
         private const val TAG = "TunnelService"
         private const val NOTIF_ID = 1
+        private const val TUN_MTU = 1500
+        private const val PEER_DNS_TIMEOUT_SECONDS = 3L
 
         /** True while the VPN is actually up in this process. Prefs alone can go
          *  stale after process death/reboot — always check this alongside them. */
@@ -52,20 +54,20 @@ class TunnelService : VpnService() {
         const val ACTION_STATUS      = "net.holowbark.VPN_STATUS"
         const val ACTION_RESTART_AWG = "net.holowbark.RESTART_AWG"
 
-        // Extras for ACTION_START intent
         const val EXTRA_AWG_CONF   = "awg_conf"
         const val EXTRA_YGG_PEERS  = "peer_uris"      // ArrayList<String>
         const val EXTRA_YGG_KEY    = "ygg_key"
 
-        // Community Yggdrasil DNS resolvers (Revertron). Support ICANN, ALFIS, OpenNIC, ad blocking.
-        // All in 200::/7 — routed through Yggdrasil overlay automatically.
+        const val EXTRA_MULTICAST  = "ygg_multicast"  // Boolean — LAN peer discovery
+
+        // Community resolvers run by Revertron, serving .ygg alongside ICANN, ALFIS
+        // and OpenNIC. All are inside 200::/7, so they route over the overlay.
         val YGG_DNS_SERVERS = listOf(
             "308:62:45:62::",   // Amsterdam
             "308:84:68:55::",   // Frankfurt
             "308:25:40:bd::",   // Bratislava
             "308:c8:48:45::",   // Buffalo
         )
-        const val EXTRA_MULTICAST  = "ygg_multicast"  // Boolean — enable LAN multicast discovery
 
         fun startIntent(
             context: Context,
@@ -102,26 +104,25 @@ class TunnelService : VpnService() {
     private var screenReceiver: BroadcastReceiver? = null
     @Volatile private var lastNotifText = ""
     private var dnsProxyInstance: SplitDnsProxy? = null
-    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     @Volatile private var status = TunnelStatus()
 
-    // -------------------------------------------------------------------------
     // Lifecycle
-    // -------------------------------------------------------------------------
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
             ACTION_STOP        -> { stopVpn(); START_NOT_STICKY }
             ACTION_RESTART_AWG -> { restartAwg(); START_STICKY }
             else -> {
-                val awgConfText = intent?.getStringExtra(EXTRA_AWG_CONF)
-                @Suppress("UNCHECKED_CAST")
-                val yggPeers   = intent?.getStringArrayListExtra(EXTRA_YGG_PEERS) ?: arrayListOf()
-                val yggKey     = intent?.getStringExtra(EXTRA_YGG_KEY) ?: ""
-                val multicast  = intent?.getBooleanExtra(EXTRA_MULTICAST, false) ?: false
-                val awgConfig  = awgConfText?.let { runCatching { parseAwgConf(it) }.getOrNull() }
-                startVpn(awgConfig, yggPeers, yggKey, multicast)
+                val awgConfig = intent?.getStringExtra(EXTRA_AWG_CONF)
+                    ?.let { runCatching { parseAwgConf(it) }.getOrNull() }
+                startVpn(
+                    awgConfig = awgConfig,
+                    peers     = intent?.getStringArrayListExtra(EXTRA_YGG_PEERS).orEmpty(),
+                    yggKey    = intent?.getStringExtra(EXTRA_YGG_KEY).orEmpty(),
+                    multicast = intent?.getBooleanExtra(EXTRA_MULTICAST, false) ?: false,
+                )
                 START_STICKY
             }
         }
@@ -134,67 +135,262 @@ class TunnelService : VpnService() {
         super.onDestroy()
     }
 
-    // -------------------------------------------------------------------------
     // VPN start / stop
-    // -------------------------------------------------------------------------
 
-    private fun startVpn(awgConfig: AwgConfig?, peers: List<String>, yggKey: String,
-                          multicast: Boolean = false) {
+    private fun startVpn(
+        awgConfig: AwgConfig?,
+        peers: List<String>,
+        yggKey: String,
+        multicast: Boolean,
+    ) {
         if (tunFd != null) {
             AppLogger.w(TAG, "VPN already running — ignoring duplicate start")
             return
         }
         AppLogger.i(TAG, "startVpn peers=${peers.size} awg=${awgConfig?.endpoint} multicast=$multicast")
-        updateStatus { copy(overall = VpnState.CONNECTING, ygg = LayerState.STARTING,
-                           awg = if (awgConfig != null) LayerState.STARTING else LayerState.IDLE) }
-        // Must call startForeground() within 5 s of startForegroundService() on API 26+.
-        // Do it before yggMgr.start() which can take seconds to start the Go runtime.
+        updateStatus {
+            copy(
+                overall = VpnState.CONNECTING,
+                ygg = LayerState.STARTING,
+                awg = if (awgConfig != null) LayerState.STARTING else LayerState.IDLE,
+            )
+        }
+        // API 26+ kills the process unless startForeground() lands within 5 s of
+        // startForegroundService(), and the Go runtime below takes seconds to come up.
         startForeground(NOTIF_ID, buildNotification(status))
 
-        // Resolve peer hostnames in parallel on a background thread while Yggdrasil starts.
+        // Peer hostnames need DNS, which is only reachable before the tunnel exists.
+        // Resolve them while Yggdrasil starts rather than in series with it.
         val peerIpsFuture = java.util.concurrent.CompletableFuture.supplyAsync {
             peers.toSet().parallelStream()
                 .flatMap { parsePeerHosts(it).stream() }
                 .collect(java.util.stream.Collectors.toSet<InetAddress>())
         }
+        val preVpnDns = readSystemDns()
 
-        // Start Yggdrasil before establish() so we get the real overlay address
-        // (derived from the private key) to assign to the TUN interface.
-        // All callbacks use nullable vars (router?, awg?) so starting before those
-        // are initialised is safe — packets are dropped until the router is ready,
-        // which is fine during the brief setup window.
-        val awgServerAddrBytes = awgConfig?.let { parseIpv6Bytes(it.endpoint) }
-        val awgServerPort      = awgConfig?.let { parseEndpointPort(it.endpoint) } ?: 44555
+        val serverAddr = awgConfig?.let { parseIpv6Bytes(it.endpoint) }
+        val serverPort = awgConfig?.let { parseEndpointPort(it.endpoint) } ?: 44555
 
         val awgMgr = AwgManager(
-            onPacketOut    = { router?.writeToTun(it) },
+            onPacketOut = { router?.writeToTun(it) },
             onStatusChange = { state -> updateStatus { copy(awg = state) } },
         )
         val yggMgr = YggdrasilManager(
             onPacketOut = { router?.writeToTun(it) },
-            onWGPacket  = if (awgServerAddrBytes != null) { wgPkt ->
-                awgMgr.sendWGPacket(wgPkt)
-            } else null,
+            onWGPacket = if (serverAddr != null) awgMgr::sendWGPacket else null,
             onStatusChange = { state, addr, count ->
                 updateStatus { copy(ygg = state, yggAddress = addr, yggPeers = count) }
             },
         )
-        if (awgServerAddrBytes != null) {
-            yggMgr.wgServerAddr = awgServerAddrBytes
-            val addrHex = awgServerAddrBytes.joinToString(":") { "%02x".format(it) }
-            AppLogger.i(TAG, "WG bridge: server=${awgConfig!!.endpoint} port=$awgServerPort addrBytes=[$addrHex]")
+        if (serverAddr != null) {
+            yggMgr.wgServerAddr = serverAddr
+            AppLogger.i(TAG, "WG bridge: server=${awgConfig!!.endpoint} port=$serverPort")
         } else {
             AppLogger.w(TAG, "AWG endpoint is not a Yggdrasil address — WG bridge disabled")
         }
-        yggMgr.start(peers, yggKey, multicast)
 
-        // Reconnect Yggdrasil peers whenever the underlying physical network changes
+        // Started before establish() so the overlay address, which is derived from
+        // the private key and available immediately, can be assigned to the TUN.
+        // Callbacks read router/awg through nullable fields, so packets arriving
+        // during this window are dropped rather than crashing.
+        yggMgr.start(peers, yggKey, multicast)
+        val yggAddress = yggMgr.getAddress().ifEmpty { "200::" }
+        AppLogger.i(TAG, "Yggdrasil address: $yggAddress")
+
+        watchPhysicalNetwork()
+        watchScreenState()
+
+        val fd = buildTunnel(awgConfig, yggAddress, collectPeerIps(peerIpsFuture), preVpnDns, yggMgr)
+            ?: run {
+                AppLogger.e(TAG, "establish() returned null — VPN permission not granted")
+                releaseResources()
+                yggMgr.stop()
+                updateStatus { copy(overall = VpnState.ERROR) }
+                return
+            }
+        tunFd = fd
+        isRunning = true
+
+        router = PacketRouter(tunFd = fd, ygg = yggMgr, awg = awgMgr, dnsProxy = dnsProxyInstance)
+        ygg = yggMgr
+        awg = awgMgr
+        YggNetworkState.manager = yggMgr
+        dnsProxyInstance?.let { yggMgr.dnsProxy = it }
+        router?.start()
+
+        if (awgConfig != null) {
+            if (serverAddr != null) {
+                // Remember what restartAwg() needs so it does not re-parse the intent.
+                savedAwgConfig = awgConfig
+                savedAwgServerAddrBytes = serverAddr
+                savedAwgServerPort = serverPort
+                launchAwgLifecycle(awgConfig, awgMgr, yggMgr, serverAddr, serverPort)
+            } else {
+                // A plain internet endpoint needs no overlay bridge.
+                awgMgr.start(awgConfig)
+            }
+        }
+
+        acquireWifiLock()
+        AppLogger.i(TAG, "VPN started, waiting for peer connections")
+    }
+
+    /**
+     * Build and establish the TUN interface. Null when the user has not granted
+     * VPN permission, which is the only way establish() fails.
+     */
+    private fun buildTunnel(
+        awgConfig: AwgConfig?,
+        yggAddress: String,
+        peerIps: Set<InetAddress>,
+        preVpnDns: InetAddress?,
+        yggMgr: YggdrasilManager,
+    ): ParcelFileDescriptor? {
+        val builder = Builder()
+            .setSession(getString(R.string.app_name))
+            .setMtu(TUN_MTU)
+
+        // The WG client address from the config, e.g. "10.9.0.2/32".
+        val clientAddress = awgConfig?.address
+        if (clientAddress != null) {
+            val ip = clientAddress.substringBefore('/')
+            val prefix = clientAddress.substringAfter('/', "32").toIntOrNull() ?: 32
+            runCatching { builder.addAddress(ip, prefix) }
+                .onFailure { AppLogger.w(TAG, "addAddress $clientAddress: $it") }
+        } else {
+            builder.addAddress("10.100.0.1", 32)
+        }
+        // Our real overlay address, so replies to connections we start come back here.
+        builder.addAddress(yggAddress, 7)
+
+        configureRoutes(builder, peerIps)
+        configureDns(builder, awgConfig, preVpnDns, yggMgr)
+        return builder.establish()
+    }
+
+    private fun configureRoutes(builder: Builder, peerIps: Set<InetAddress>) {
+        // A single /128 host route makes Android's resolver issue AAAA queries even
+        // with no global IPv6 on the physical network. Without it, .ygg names never
+        // resolve. See bionic/libc/dns/net/getaddrinfo.c, the "have IPv6" check.
+        builder.addRoute("2000::", 128)
+
+        // Excluding an IPv6 peer is pointless when the physical network cannot
+        // reach IPv6 at all, and costs 128 routes below API 33.
+        val physicalHasIPv6 = hasPhysicalIPv6()
+        val ipv4Exclusions = peerIps.filterIsInstance<Inet4Address>().toSet()
+        val ipv6Peers = peerIps.filterIsInstance<Inet6Address>()
+        val ipv6Exclusions = if (physicalHasIPv6) ipv6Peers.toSet() else emptySet()
+        if (!physicalHasIPv6 && ipv6Peers.isNotEmpty()) {
+            AppLogger.w(TAG, "No physical IPv6 — ${ipv6Peers.size} IPv6 peer(s) unreachable: " +
+                ipv6Peers.joinToString { it.hostAddress ?: "?" })
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            builder.addRoute("0.0.0.0", 0)
+            builder.addRoute("::", 0)
+            (ipv4Exclusions + ipv6Exclusions).forEach { ip ->
+                val prefix = if (ip is Inet4Address) 32 else 128
+                runCatching { builder.excludeRoute(IpPrefix(ip, prefix)) }
+                    .onFailure { AppLogger.w(TAG, "excludeRoute $ip: $it") }
+            }
+            AppLogger.i(TAG, "Routes: catch-all, excluding " +
+                "${ipv4Exclusions.size} IPv4 + ${ipv6Exclusions.size} IPv6")
+            return
+        }
+
+        // Below API 33 there is no excludeRoute, so the catch-all is replaced by the
+        // sub-routes that cover everything but the peers. See RouteSplitter.
+        val ipv4Routes = buildRoutesExcluding(
+            listOf(Route(InetAddress.getByAddress(ByteArray(4)), 0)), ipv4Exclusions)
+        ipv4Routes.forEach { builder.addRouteOrWarn(it) }
+        if (ipv6Exclusions.isEmpty()) {
+            builder.addRoute("::", 0)
+            AppLogger.i(TAG, "Routes: ${ipv4Routes.size} IPv4 + ::/0, " +
+                "excluding ${ipv4Exclusions.size} IPv4 (API < 33)")
+            return
+        }
+        val ipv6Routes = buildRoutesExcluding(
+            listOf(Route(InetAddress.getByAddress(ByteArray(16)), 0)), ipv6Exclusions)
+        ipv6Routes.forEach { builder.addRouteOrWarn(it) }
+        AppLogger.i(TAG, "Routes: ${ipv4Routes.size} IPv4 + ${ipv6Routes.size} IPv6, excluding " +
+            "${ipv4Exclusions.size} + ${ipv6Exclusions.size} (API < 33)")
+    }
+
+    private fun Builder.addRouteOrWarn(route: Route) {
+        val host = route.address.hostAddress ?: return
+        runCatching { addRoute(host, route.prefix) }
+            .onFailure { AppLogger.w(TAG, "addRoute $host/${route.prefix}: $it") }
+    }
+
+    private fun configureDns(
+        builder: Builder,
+        awgConfig: AwgConfig?,
+        preVpnDns: InetAddress?,
+        yggMgr: YggdrasilManager,
+    ) {
+        val awgDns = awgConfig?.dns.orEmpty()
+            .split(",").map { it.trim() }.filter { it.isNotEmpty() }
+
+        val yggResolver = if (Prefs.of(this).yggDnsEnabled) {
+            runCatching { InetAddress.getByName(YGG_DNS_SERVERS.first()) as Inet6Address }
+                .onFailure { AppLogger.w(TAG, "Ygg DNS resolver unavailable: $it") }
+                .getOrNull()
+        } else null
+
+        if (yggResolver == null) {
+            awgDns.forEach { server ->
+                runCatching { builder.addDnsServer(server) }
+                    .onFailure { AppLogger.w(TAG, "addDnsServer $server: $it") }
+            }
+            return
+        }
+
+        // The system resolver is pointed at a local address the router intercepts,
+        // so .ygg names can go to the overlay and everything else stays on the
+        // config's DNS — or, failing that, whatever the network used before us.
+        val upstream = awgDns.firstOrNull()
+            ?.let { runCatching { InetAddress.getByName(it) }.getOrNull() }
+            ?: preVpnDns
+        dnsProxyInstance = SplitDnsProxy(
+            upstreamDns = upstream,
+            yggDnsResolver = yggResolver,
+            yggMgr = yggMgr,
+            protect = ::protect,
+            writeToTun = { router?.writeToTun(it) },
+        )
+        runCatching { builder.addDnsServer(SplitDnsProxy.PROXY_ADDRESS) }
+            .onFailure { AppLogger.w(TAG, "addDnsServer proxy: $it") }
+        AppLogger.i(TAG, "Split DNS proxy enabled, upstream=$upstream")
+    }
+
+    /** The peer addresses resolved in the background, or none if DNS was too slow. */
+    private fun collectPeerIps(
+        future: java.util.concurrent.CompletableFuture<Set<InetAddress>>,
+    ): Set<InetAddress> = try {
+        future.get(PEER_DNS_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+    } catch (_: Exception) {
+        AppLogger.w(TAG, "Peer DNS timed out — route exclusions may be incomplete")
+        future.cancel(true)
+        emptySet()
+    }
+
+    /** The network's DNS server, read before the tunnel replaces it. */
+    private fun readSystemDns(): InetAddress? = try {
         val cm = getSystemService(ConnectivityManager::class.java)
+        val links = cm?.getLinkProperties(cm.activeNetwork)
+        links?.dnsServers?.firstOrNull { it is Inet4Address } ?: links?.dnsServers?.firstOrNull()
+    } catch (e: Exception) {
+        AppLogger.w(TAG, "pre-VPN DNS read failed: $e")
+        null
+    }
+
+    /** Yggdrasil's own backoff is slow; a network change is a reason to redial now. */
+    private fun watchPhysicalNetwork() {
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
-        val cb = object : ConnectivityManager.NetworkCallback() {
+        val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 AppLogger.i(TAG, "Physical network available — retrying Ygg peers")
                 ygg?.retryPeers()
@@ -207,199 +403,44 @@ class TunnelService : VpnService() {
                 ygg?.retryPeers()
             }
         }
-        cm.registerNetworkCallback(request, cb)
-        netCallback = cb
+        getSystemService(ConnectivityManager::class.java).registerNetworkCallback(request, callback)
+        netCallback = callback
+    }
 
-        // Adaptive polling: slow down when screen is off to save battery
-        val sr = object : BroadcastReceiver() {
+    /** Nobody reads the peer list with the screen off, so poll it less often. */
+    private fun watchScreenState() {
+        val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                when (intent.action) {
-                    Intent.ACTION_SCREEN_OFF -> ygg?.slowPolling = true
-                    Intent.ACTION_SCREEN_ON  -> ygg?.slowPolling = false
-                }
+                ygg?.slowPolling = intent.action == Intent.ACTION_SCREEN_OFF
             }
         }
-        ContextCompat.registerReceiver(this, sr, IntentFilter().apply {
+        ContextCompat.registerReceiver(this, receiver, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_SCREEN_ON)
         }, ContextCompat.RECEIVER_NOT_EXPORTED)
-        screenReceiver = sr
+        screenReceiver = receiver
+    }
 
-        // The overlay address is deterministic from the private key — available immediately
-        // after startJSON(), no need to wait for peer connections.
-        val yggAddress = yggMgr.getAddress().ifEmpty { "200::" }
-        AppLogger.i(TAG, "Yggdrasil address: $yggAddress")
-
-        // Collect DNS results — should be ready by now (ran in parallel with Ygg startup)
-        val peerIps: Set<InetAddress> = try {
-            peerIpsFuture.get(3, java.util.concurrent.TimeUnit.SECONDS)
-        } catch (_: Exception) {
-            AppLogger.w(TAG, "Peer DNS timed out — route exclusions may be incomplete")
-            peerIpsFuture.cancel(true); emptySet()
-        }
-
-        val physicalHasIPv6: Boolean = hasPhysicalIPv6()
-        AppLogger.i(TAG, "physicalHasIPv6=$physicalHasIPv6")
-
-        // Separate exclusions by address family.
-        // IPv6 peer exclusions only make sense when the physical network has IPv6.
-        val ipv4Exclusions: Set<Inet4Address> = peerIps.filterIsInstance<Inet4Address>().toSet()
-        val ipv6Exclusions: Set<Inet6Address> = if (physicalHasIPv6) {
-            peerIps.filterIsInstance<Inet6Address>().toSet()
-        } else {
-            val skipped = peerIps.filterIsInstance<Inet6Address>()
-            if (skipped.isNotEmpty()) {
-                AppLogger.w(TAG, "Physical network has no IPv6 — ${skipped.size} IPv6 peer(s) will " +
-                                 "be unreachable: ${skipped.joinToString { it.hostAddress ?: "?" }}")
-            }
-            emptySet()
-        }
-
-        // Read system DNS before the VPN overwrites it (used as split-DNS upstream fallback)
-        val preVpnDns: InetAddress? = try {
-            val lp = getSystemService(ConnectivityManager::class.java)
-                ?.getLinkProperties(getSystemService(ConnectivityManager::class.java)?.activeNetwork)
-            lp?.dnsServers?.firstOrNull { it is Inet4Address }
-                ?: lp?.dnsServers?.firstOrNull()
-        } catch (e: Exception) {
-            AppLogger.w(TAG, "pre-VPN DNS read failed: $e")
-            null
-        }
-
-        val builder = Builder()
-            .setSession("Holowbark")
-            .setMtu(1500)
-
-        // Add WG client address from config (e.g. "10.9.0.2/32")
-        awgConfig?.address?.let { addr ->
-            val slash = addr.indexOf('/')
-            val ip     = if (slash >= 0) addr.substring(0, slash) else addr
-            val prefix = if (slash >= 0) addr.substring(slash + 1).toIntOrNull() ?: 32 else 32
-            runCatching { builder.addAddress(ip, prefix) }
-                .onFailure { AppLogger.w(TAG, "addAddress $addr: $it") }
-        } ?: run {
-            builder.addAddress("10.100.0.1", 32)
-        }
-        // Use the real Yggdrasil address so replies to user-initiated connections
-        // are routed correctly through the overlay back to this node.
-        builder.addAddress(yggAddress, 7)
-        // Tricks Android's DNS resolver into issuing AAAA queries even when there is no
-        // global IPv6 on the physical network. Without this single /128 host route the
-        // resolver skips AAAA lookups entirely, making Yggdrasil service names unresolvable.
-        // See android.googlesource.com/.../bionic/libc/dns/net/getaddrinfo.c#1935
-        builder.addRoute("2000::", 128)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // API 33+: catch-all routes + excludeRoute per IP (no route-count explosion).
-            builder.addRoute("0.0.0.0", 0)
-            builder.addRoute("::", 0)
-            (ipv4Exclusions + ipv6Exclusions).forEach { ip ->
-                val prefix = if (ip is Inet4Address) 32 else 128
-                runCatching { builder.excludeRoute(IpPrefix(ip, prefix)) }
-                    .onFailure { AppLogger.w(TAG, "excludeRoute $ip: $it") }
-            }
-            AppLogger.i(TAG, "Routes: catch-all + ${ipv4Exclusions.size} IPv4 + ${ipv6Exclusions.size} IPv6 exclusions (API 33+)")
-        } else {
-            // API < 33: excludeRoute unavailable — use route-splitting.
-            // IPv4: max 32 routes per excluded IP.
-            val ipv4Base = listOf(Route(InetAddress.getByAddress(byteArrayOf(0, 0, 0, 0)), 0))
-            val ipv4Routes = buildRoutesExcluding(ipv4Base, ipv4Exclusions)
-            ipv4Routes.forEach { r ->
-                runCatching { builder.addRoute(r.address.hostAddress ?: return@forEach, r.prefix) }
-                    .onFailure { AppLogger.w(TAG, "addRoute ${r.address.hostAddress}/${r.prefix}: $it") }
-            }
-            // IPv6: route-splitting only when physical IPv6 is available (max 128 routes per IP).
-            if (ipv6Exclusions.isNotEmpty()) {
-                val ipv6Base = listOf(Route(InetAddress.getByAddress(ByteArray(16)), 0))
-                val ipv6Routes = buildRoutesExcluding(ipv6Base, ipv6Exclusions)
-                ipv6Routes.forEach { r ->
-                    runCatching { builder.addRoute(r.address.hostAddress ?: return@forEach, r.prefix) }
-                        .onFailure { AppLogger.w(TAG, "addRoute [${r.address.hostAddress}]/${r.prefix}: $it") }
-                }
-                AppLogger.i(TAG, "Routes: split IPv4 (${ipv4Routes.size}) + split IPv6 (${ipv6Routes.size}), excl ${ipv4Exclusions.size}+${ipv6Exclusions.size} (API<33)")
-            } else {
-                builder.addRoute("::", 0)
-                AppLogger.i(TAG, "Routes: split IPv4 (${ipv4Routes.size}) + ::/0, excl ${ipv4Exclusions.size} IPv4 (API<33, no phys IPv6)")
-            }
-        }
-
-        val awgDnsServers = awgConfig?.dns?.split(",")
-            ?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
-
-        val yggDnsEnabled = Prefs.of(this).yggDnsEnabled
-
-        if (yggDnsEnabled) {
-            // Split-DNS proxy: .ygg queries → Yggdrasil resolver, others → AWG DNS or pre-VPN DNS
-            val upstreamDns: InetAddress? = awgDnsServers.firstOrNull()
-                ?.let { runCatching { InetAddress.getByName(it) }.getOrNull() }
-                ?: preVpnDns
-            val yggResolver = runCatching {
-                InetAddress.getByName(YGG_DNS_SERVERS.first()) as Inet6Address
-            }.getOrNull()
-            if (yggResolver != null) {
-                dnsProxyInstance = SplitDnsProxy(
-                    upstreamDns    = upstreamDns,
-                    yggDnsResolver = yggResolver,
-                    yggMgr         = yggMgr,
-                    protect        = ::protect,
-                    writeToTun     = { router?.writeToTun(it) },
-                )
-                runCatching { builder.addDnsServer("198.18.0.53") }
-                    .onFailure { AppLogger.w(TAG, "addDnsServer proxy: $it") }
-                AppLogger.i(TAG, "Split DNS proxy enabled, upstream=$upstreamDns")
-            } else {
-                AppLogger.w(TAG, "Ygg DNS resolver unavailable — using AWG DNS only")
-                awgDnsServers.forEach { server ->
-                    runCatching { builder.addDnsServer(server) }
-                        .onFailure { AppLogger.w(TAG, "addDnsServer $server: $it") }
-                }
-            }
-        } else {
-            awgDnsServers.forEach { server ->
-                runCatching { builder.addDnsServer(server) }
-                    .onFailure { AppLogger.w(TAG, "addDnsServer $server: $it") }
-            }
-        }
-        val fd = builder.establish() ?: run {
-            AppLogger.e(TAG, "establish() returned null — VPN permission not granted")
-            netCallback?.let { runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) } }
-            netCallback = null
-            screenReceiver?.let { runCatching { unregisterReceiver(it) } }
-            screenReceiver = null
-            dnsProxyInstance?.stop(); dnsProxyInstance = null
-            yggMgr.stop()
-            updateStatus { copy(overall = VpnState.ERROR) }
-            return
-        }
-        tunFd = fd
-        isRunning = true
-
-        val routerObj = PacketRouter(tunFd = fd, ygg = yggMgr, awg = awgMgr, dnsProxy = dnsProxyInstance)
-        ygg    = yggMgr
-        awg    = awgMgr
-        router = routerObj
-        YggNetworkState.manager = yggMgr
-        dnsProxyInstance?.let { yggMgr.dnsProxy = it }
-
-        routerObj.start()
-
-        if (awgConfig != null) {
-            if (awgServerAddrBytes != null) {
-                // Defer AWG start: wait for Yggdrasil peers, then ping server, then start tunnel
-                savedAwgConfig          = awgConfig
-                savedAwgServerAddrBytes = awgServerAddrBytes
-                savedAwgServerPort      = awgServerPort
-                launchAwgLifecycle(awgConfig, awgMgr, yggMgr, awgServerAddrBytes, awgServerPort)
-            } else {
-                // Non-Yggdrasil endpoint: start AWG immediately (no bridge needed)
-                awgMgr.start(awgConfig)
-            }
-        }
-
-        val wm = applicationContext.getSystemService(WIFI_SERVICE) as? android.net.wifi.WifiManager
-        wifiLock = wm?.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "holowbark:vpn")
+    /** Wi-Fi power saving parks the radio between packets and stalls the overlay. */
+    private fun acquireWifiLock() {
+        val wifi = applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
+        wifiLock = wifi?.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "holowbark:vpn")
         wifiLock?.acquire()
-        AppLogger.i(TAG, "VPN started, waiting for peer connections")
+    }
+
+    private fun releaseResources() {
+        netCallback?.let {
+            runCatching {
+                getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it)
+            }
+        }
+        netCallback = null
+        screenReceiver?.let { runCatching { unregisterReceiver(it) } }
+        screenReceiver = null
+        dnsProxyInstance?.stop()
+        dnsProxyInstance = null
+        wifiLock?.let { runCatching { it.release() } }
+        wifiLock = null
     }
 
     /**
@@ -502,17 +543,12 @@ class TunnelService : VpnService() {
         isRunning = false
         YggNetworkState.manager = null
         YggNetworkState.reset()
-        netCallback?.let { runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) } }
-        netCallback = null
-        screenReceiver?.let { runCatching { unregisterReceiver(it) } }
-        screenReceiver = null
         ygg?.dnsProxy = null
-        dnsProxyInstance?.stop(); dnsProxyInstance = null
         awgLifecycleScope?.cancel(); awgLifecycleScope = null
         savedAwgConfig = null; savedAwgServerAddrBytes = null
+        releaseResources()
         router?.stop(); awg?.stop(); ygg?.stop(); tunFd?.close()
         router = null; awg = null; ygg = null; tunFd = null
-        wifiLock?.let { runCatching { it.release() } }; wifiLock = null
         lastNotifText = ""
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -534,9 +570,7 @@ class TunnelService : VpnService() {
         launchAwgLifecycle(config, awgMgr, yggMgr, addrBytes, savedAwgServerPort)
     }
 
-    // -------------------------------------------------------------------------
     // Status helpers
-    // -------------------------------------------------------------------------
 
     @Synchronized
     private fun updateStatus(block: TunnelStatus.() -> TunnelStatus) {
@@ -568,9 +602,7 @@ class TunnelService : VpnService() {
         }
     }
 
-    // -------------------------------------------------------------------------
     // Notification
-    // -------------------------------------------------------------------------
 
     private fun notificationText(s: TunnelStatus): String = when (s.overall) {
         VpnState.CONNECTED -> "Ygg: ${s.yggAddress} | peers: ${s.yggPeers}"

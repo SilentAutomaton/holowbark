@@ -29,7 +29,6 @@ import net.holowbark.vpn.parseIpv6Bytes
 import java.net.Inet6Address
 
 class TunnelViewModel(app: Application) : AndroidViewModel(app) {
-
     private val prefs = Prefs.of(app)
     val repo = PeerRepository(PeerDatabase.getInstance(app), app)
 
