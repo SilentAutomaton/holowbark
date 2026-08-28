@@ -43,6 +43,12 @@ class TunnelService : VpnService() {
         private const val NOTIF_ID = 1
         private const val PEER_DNS_TIMEOUT_SECONDS = 3L
 
+        private const val WATCHDOG_INTERVAL_MS = 60_000L
+        private const val WATCHDOG_INTERVAL_IDLE_MS = 240_000L
+        private const val WATCHDOG_PING_TIMEOUT_MS = 5_000L
+        private const val WATCHDOG_FAILURES_BEFORE_RECOVERY = 3
+        private const val RECOVERY_COOLDOWN_MS = 120_000L
+
         /** True while the VPN is actually up in this process. Prefs alone can go
          *  stale after process death/reboot — always check this alongside them. */
         @Volatile var isRunning = false
@@ -99,6 +105,13 @@ class TunnelService : VpnService() {
     private var savedAwgServerAddrBytes: ByteArray? = null
     private var savedAwgServerPort: Int = 44555
 
+    // What the overlay was started with, so recovery can start it the same way.
+    private var savedPeers: List<String> = emptyList()
+    private var savedYggKey: String = ""
+    private var savedMulticast: Boolean = false
+
+    private var watchdogScope: CoroutineScope? = null
+
     private var netCallback: ConnectivityManager.NetworkCallback? = null
     private var screenReceiver: BroadcastReceiver? = null
     @Volatile private var lastNotifText = ""
@@ -106,6 +119,9 @@ class TunnelService : VpnService() {
     private var wifiLock: WifiManager.WifiLock? = null
 
     @Volatile private var status = TunnelStatus()
+    @Volatile private var consecutiveFailures = 0
+    @Volatile private var lastRecoveryAt = 0L
+    @Volatile private var recoveryStep = 0
 
     // Lifecycle
 
@@ -193,6 +209,9 @@ class TunnelService : VpnService() {
         // the private key and available immediately, can be assigned to the TUN.
         // Callbacks read router/awg through nullable fields, so packets arriving
         // during this window are dropped rather than crashing.
+        savedPeers = peers
+        savedYggKey = yggKey
+        savedMulticast = multicast
         yggMgr.start(peers, yggKey, multicast)
         val yggAddress = yggMgr.getAddress().ifEmpty { "200::" }
         AppLogger.i(TAG, "Yggdrasil address: $yggAddress")
@@ -232,6 +251,7 @@ class TunnelService : VpnService() {
         }
 
         acquireWifiLock()
+        if (serverAddr != null) startWatchdog(serverAddr)
         AppLogger.i(TAG, "VPN started, waiting for peer connections")
     }
 
@@ -396,6 +416,7 @@ class TunnelService : VpnService() {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 AppLogger.i(TAG, "Physical network available — retrying Ygg peers")
+                consecutiveFailures = 0
                 ygg?.retryPeers()
             }
             override fun onLost(network: Network) {
@@ -548,7 +569,9 @@ class TunnelService : VpnService() {
         YggNetworkState.reset()
         ygg?.dnsProxy = null
         awgLifecycleScope?.cancel(); awgLifecycleScope = null
+        watchdogScope?.cancel(); watchdogScope = null
         savedAwgConfig = null; savedAwgServerAddrBytes = null
+        savedPeers = emptyList(); savedYggKey = ""
         releaseResources()
         router?.stop(); awg?.stop(); ygg?.stop(); tunFd?.close()
         router = null; awg = null; ygg = null; tunFd = null
@@ -557,6 +580,97 @@ class TunnelService : VpnService() {
         stopSelf()
         status = TunnelStatus(overall = VpnState.DISCONNECTED)
         broadcastStatus()
+    }
+
+    /**
+     * Watch for the server going unreachable through the overlay, and rebuild the
+     * overlay when it does.
+     *
+     * The probe is skipped entirely whenever a packet has recently come out of the
+     * tunnel: traffic already proves the path works, so an active tunnel costs one
+     * comparison per interval and no packets at all. Only an idle tunnel is pinged,
+     * and only while the tunnel claims to be connected.
+     *
+     * A plain [delay] is deliberate. It holds no wakelock and schedules no alarm, so
+     * a sleeping device simply does not run the check — which is the correct
+     * trade: an unreachable server matters when the user next uses the phone, not
+     * at 04:00.
+     */
+    private fun startWatchdog(serverAddr: ByteArray) {
+        watchdogScope?.cancel()
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        watchdogScope = scope
+
+        val address = runCatching { Inet6Address.getByAddress(serverAddr).hostAddress }
+            .getOrNull() ?: return
+
+        scope.launch {
+            while (isActive) {
+                delay(if (ygg?.slowPolling == true) WATCHDOG_INTERVAL_IDLE_MS
+                      else WATCHDOG_INTERVAL_MS)
+                if (!Prefs.of(this@TunnelService).autoRecoverEnabled) {
+                    consecutiveFailures = 0
+                    continue
+                }
+                if (status.overall != VpnState.CONNECTED) continue
+                if (trafficSeenRecently()) {
+                    consecutiveFailures = 0
+                    continue
+                }
+                if (ygg?.pingYgg(address, WATCHDOG_PING_TIMEOUT_MS) != null) {
+                    consecutiveFailures = 0
+                    continue
+                }
+                consecutiveFailures++
+                AppLogger.w(TAG, "Watchdog: server unreachable ($consecutiveFailures/$WATCHDOG_FAILURES_BEFORE_RECOVERY)")
+                if (consecutiveFailures >= WATCHDOG_FAILURES_BEFORE_RECOVERY) recover()
+            }
+        }
+    }
+
+    private fun trafficSeenRecently(): Boolean {
+        val last = awg?.lastPacketAt ?: return false
+        return System.currentTimeMillis() - last < WATCHDOG_INTERVAL_MS
+    }
+
+    /**
+     * Escalate one rung at a time. Redialling costs nothing, restarting the AWG
+     * layer leaves the overlay alone, and only a repeated failure is worth rebuilding
+     * the overlay for.
+     */
+    private suspend fun recover() {
+        val now = System.currentTimeMillis()
+        if (now - lastRecoveryAt < RECOVERY_COOLDOWN_MS) return
+        lastRecoveryAt = now
+        consecutiveFailures = 0
+
+        when (recoveryStep++ % 3) {
+            0 -> {
+                AppLogger.i(TAG, "Recovery: redialling Yggdrasil peers")
+                ygg?.retryPeers()
+            }
+            1 -> {
+                AppLogger.i(TAG, "Recovery: restarting the tunnel layer")
+                restartAwg()
+            }
+            else -> {
+                AppLogger.i(TAG, "Recovery: restarting Yggdrasil")
+                restartYgg()
+            }
+        }
+    }
+
+    /**
+     * Stop and start the overlay without touching the TUN. The overlay address comes
+     * from the private key, so it is unchanged by a restart — the interface, its
+     * routes and the VPN permission all stay valid, and the user sees no prompt.
+     */
+    private fun restartYgg() {
+        val yggMgr = ygg ?: return
+        updateStatus { copy(ygg = LayerState.STARTING) }
+        yggMgr.stop()
+        yggMgr.start(savedPeers, savedYggKey, savedMulticast)
+        restartAwg()
     }
 
     /** Tear down and restart only the AWG layer (Yggdrasil keeps running). */

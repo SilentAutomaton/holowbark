@@ -25,6 +25,8 @@ class Prefs(private val prefs: SharedPreferences) {
         // User configuration.
         private const val YGG_PRIVATE_KEY  = "ygg_private_key"
         private const val YGG_DNS_ENABLED  = "ygg_dns_enabled"
+        private const val YGG_MULTICAST     = "ygg_multicast"
+        private const val AUTO_RECOVER      = "auto_recover"
         private const val AWG_CONF         = "awg_conf"
         private const val AWG_CONF_RAW     = "awg_conf_raw"
         private const val SELECTED_PEERS   = "selected_peers"
@@ -75,6 +77,16 @@ class Prefs(private val prefs: SharedPreferences) {
     var yggDnsEnabled: Boolean
         get() = prefs.getBoolean(YGG_DNS_ENABLED, false)
         set(v) = prefs.edit().putBoolean(YGG_DNS_ENABLED, v).apply()
+
+    /** Discover peers on the local network as well as dialling the configured ones. */
+    var multicastEnabled: Boolean
+        get() = prefs.getBoolean(YGG_MULTICAST, false)
+        set(v) = prefs.edit().putBoolean(YGG_MULTICAST, v).apply()
+
+    /** Restart the overlay by itself when the server stops answering through it. */
+    var autoRecoverEnabled: Boolean
+        get() = prefs.getBoolean(AUTO_RECOVER, false)
+        set(v) = prefs.edit().putBoolean(AUTO_RECOVER, v).apply()
 
     /**
      * The node's Yggdrasil identity, as the 128 hex chars (seed + public key) that

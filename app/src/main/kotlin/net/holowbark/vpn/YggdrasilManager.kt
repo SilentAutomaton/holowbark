@@ -23,7 +23,9 @@ class YggdrasilManager(
         private const val PING_TIMEOUT_MS            = 4_000L
     }
 
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    // Rebuilt on every start: a cancelled scope can never launch again, and the
+    // manager is restarted in place when the tunnel recovers.
+    @Volatile private var scope: CoroutineScope? = null
     @Volatile private var ygg: Yggdrasil? = null
     /** AWG server 16-byte IPv6 address; packets from this src go to [onWGPacket]. */
     @Volatile var wgServerAddr: ByteArray? = null
@@ -52,8 +54,10 @@ class YggdrasilManager(
             YggNetworkState.selfAddress.value = addr
             AppLogger.i(TAG, "Yggdrasil started — address: $addr")
             onStatusChange(LayerState.STARTING, addr, 0)
-            scope.launch { readLoop(inst) }
-            scope.launch { pollPeers(inst) }
+            val running = CoroutineScope(Dispatchers.IO + SupervisorJob())
+            scope = running
+            running.launch { readLoop(inst, running) }
+            running.launch { pollPeers(inst, running) }
         } catch (e: Exception) {
             AppLogger.e(TAG, "Failed to start Yggdrasil: $e")
             onStatusChange(LayerState.ERROR, "", 0)
@@ -61,7 +65,8 @@ class YggdrasilManager(
     }
 
     fun stop() {
-        scope.cancel()
+        scope?.cancel()
+        scope = null
         pendingPings.values.forEach { (d, _) -> d.cancel() }
         pendingPings.clear()
         val inst = ygg ?: return
@@ -126,9 +131,9 @@ class YggdrasilManager(
 
     // Read loop
 
-    private fun readLoop(inst: Yggdrasil) {
+    private fun readLoop(inst: Yggdrasil, scope: CoroutineScope) {
         AppLogger.d(TAG, "readLoop started")
-        while (scope.isActive && ygg != null) {
+        while (scope.isActive && ygg === inst) {
             try {
                 val pkt = inst.recv() ?: continue
                 if (pkt.isEmpty()) continue
@@ -180,10 +185,10 @@ class YggdrasilManager(
 
     // Peer polling
 
-    private suspend fun pollPeers(inst: Yggdrasil) {
+    private suspend fun pollPeers(inst: Yggdrasil, scope: CoroutineScope) {
         var lastCount = -1
         var lastAddr  = ""
-        while (scope.isActive && ygg != null) {
+        while (scope.isActive && ygg === inst) {
             val addr  = runCatching { inst.addressString }.getOrDefault("")
             val json  = runCatching { inst.peersJSON ?: "[]" }.getOrDefault("[]")
             val peers = parsePeers(json)

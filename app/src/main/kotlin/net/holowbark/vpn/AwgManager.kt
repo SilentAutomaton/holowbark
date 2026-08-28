@@ -35,6 +35,14 @@ class AwgManager(
         private const val TAG = "AwgManager"
     }
 
+    /**
+     * When a packet last came out of the tunnel decrypted. A watchdog reads this to
+     * decide whether the tunnel needs probing at all — one write per packet is far
+     * cheaper than a periodic ping.
+     */
+    @Volatile var lastPacketAt: Long = 0L
+        private set
+
     @Volatile private var backend: Backend? = null
     @Volatile private var activeScope: CoroutineScope? = null
     private var protocol = "WireGuard"
@@ -52,6 +60,7 @@ class AwgManager(
         try {
             b.start(settings, config.effectiveMtu.toLong())
             backend = b
+            lastPacketAt = System.currentTimeMillis()
             onStatusChange(LayerState.STARTING)   // UP only after first decrypted packet
             val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
             activeScope = scope
@@ -119,6 +128,7 @@ class AwgManager(
                 }
                 break
             } ?: break
+            lastPacketAt = System.currentTimeMillis()
             if (firstPacket) {
                 firstPacket = false
                 AppLogger.i(TAG, "WG handshake complete — tunnel UP (${pkt.size} bytes)")

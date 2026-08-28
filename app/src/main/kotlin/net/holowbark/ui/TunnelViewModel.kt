@@ -71,6 +71,12 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     private val _yggDnsEnabled = MutableStateFlow(prefs.yggDnsEnabled)
     val yggDnsEnabled: StateFlow<Boolean> = _yggDnsEnabled.asStateFlow()
 
+    private val _multicastEnabled = MutableStateFlow(prefs.multicastEnabled)
+    val multicastEnabled: StateFlow<Boolean> = _multicastEnabled.asStateFlow()
+
+    private val _autoRecoverEnabled = MutableStateFlow(prefs.autoRecoverEnabled)
+    val autoRecoverEnabled: StateFlow<Boolean> = _autoRecoverEnabled.asStateFlow()
+
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val status = TunnelStatus.fromIntent(intent) ?: return
@@ -119,6 +125,7 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
             peers   = _selectedPeers.value.toList(),
             awgConf = _awgConfig.value?.toConfString(),
             yggKey  = prefs.yggPrivateKey(),
+            multicast = prefs.multicastEnabled,
         ))
     }
 
@@ -206,6 +213,19 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
         val enabled = !_yggDnsEnabled.value
         _yggDnsEnabled.value = enabled
         prefs.yggDnsEnabled = enabled
+    }
+
+    fun toggleMulticast() {
+        val enabled = !_multicastEnabled.value
+        _multicastEnabled.value = enabled
+        prefs.multicastEnabled = enabled
+    }
+
+    /** Read by the service on every watchdog tick, so this takes effect immediately. */
+    fun toggleAutoRecover() {
+        val enabled = !_autoRecoverEnabled.value
+        _autoRecoverEnabled.value = enabled
+        prefs.autoRecoverEnabled = enabled
     }
 
     /** Ping the AWG server's Yggdrasil address through the overlay. */
