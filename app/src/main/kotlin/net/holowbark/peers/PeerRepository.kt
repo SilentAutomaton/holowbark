@@ -12,6 +12,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 import net.holowbark.AppLogger
+import net.holowbark.BuildConfig
 
 /**
  * The list of Yggdrasil public peers, cached in Room.
@@ -49,7 +50,7 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         .readTimeout(30, TimeUnit.SECONDS)
         .addInterceptor { chain ->
             val req = chain.request().newBuilder()
-                .header("User-Agent", "Holowbark/1.0")
+                .header("User-Agent", "Holowbark/${BuildConfig.VERSION_NAME}")
                 .build()
             chain.proceed(req)
         }
