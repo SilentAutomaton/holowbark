@@ -1,5 +1,6 @@
 package net.holowbark.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -128,11 +129,17 @@ private fun ConnectButton(
     description: String,
     onClick: () -> Unit,
 ) {
+    // The fill alone sits at 1.1:1 against the background, so the border is what
+    // makes this read as a control at all — and what satisfies the 3:1 WCAG asks
+    // of a non-text UI component. Ash rather than a layer colour, so the button
+    // edge does not compete with what the rings are saying.
+    val edge = MaterialTheme.colorScheme.outline
     Surface(
         onClick = onClick,
         enabled = enabled,
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(2.dp, if (enabled) edge else edge.copy(alpha = 0.4f)),
         modifier = Modifier.size(168.dp).semantics { contentDescription = description },
     ) {
         Box(contentAlignment = Alignment.Center) {
