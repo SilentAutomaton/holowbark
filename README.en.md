@@ -54,16 +54,18 @@ so the transport that carries the tunnel does not run through it.
 
 ## Quick start
 
-1. On the **WG** tab, import your WireGuard `.conf` file. If you do not have a
-   server yet, set one up with the instructions below.
-2. On the **Peers** tab, pick the country closest to you and add at least ten
-   peers. More peers means a more resilient overlay.
-3. Return to the home screen and tap **Connect**.
+1. Open **Settings → Server** and import your WireGuard `.conf` file. If you do not
+   have a server yet, set one up with the instructions below.
+2. Open **Settings → Peers**. Either browse the public list and pick a country close
+   to you, or type in a peer of your own — your Yggdrasil node, or one on your LAN.
+   Ten or more public peers makes for a resilient overlay.
+3. Go back and press **Connect**.
 
-The home screen shows each layer separately. Yggdrasil comes up first and reports
-its overlay address and peer count; the WireGuard layer follows once the server
-answers a ping through the mesh. If the second layer stalls, **Restart** retries it
-without tearing down the overlay.
+The ring around the button is the tunnel. Each segment of the outer ring is one
+connected Yggdrasil peer, so you can watch the overlay assemble; the inner ring is
+the WireGuard tunnel running through it, which comes up once the server answers a
+ping through the mesh. If the tunnel stalls with the overlay up, **Restart tunnel**
+retries it without tearing the overlay down.
 
 ## Server setup — manual
 
@@ -161,8 +163,8 @@ PersistentKeepalive = 25
 ```
 
 `Endpoint` must be the server's Yggdrasil address from step 1 — that address is
-what tells the app to route the tunnel over the overlay. Import the file on the WG
-tab.
+what tells the app to route the tunnel over the overlay. Import the file under
+**Settings → Server**.
 
 Set `MTU` on both ends rather than leaving it to be inferred. `wg-quick` derives an
 unset MTU from the route to the peer's endpoint, and a client whose endpoint is a
@@ -183,7 +185,7 @@ WG_HOST=[200:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx]
 ```
 
 Every client config the interface generates then carries the correct `Endpoint`.
-Download the `.conf` and import it on the WG tab.
+Download the `.conf` and import it under **Settings → Server**.
 
 Once setup is finished, close both ports to the public internet:
 
@@ -254,10 +256,11 @@ the dependencies it needs, because it has to compile inside that module.
 
 ```
 app/src/main/kotlin/net/holowbark/
-├── vpn/      the tunnel: service, both managers, router, codec, DNS proxy
+├── vpn/      the tunnel: service, both managers, router, codec, DNS proxy,
+│            peer-URI parsing, the recovery watchdog
 ├── peers/    the public peer list — fetch, cache, parse
 ├── config/   WireGuard/AmneziaWG .conf parsing
-└── ui/       Compose screens, navigation, view model
+└── ui/       Compose screens, navigation, view model, the connect ring
 ```
 
 The whole Kotlin↔Go boundary is two files. `YggdrasilManager` wraps
@@ -286,7 +289,7 @@ The **Logs** tab is the first place to look for all of these. It holds the last 
 lines and copies to the clipboard.
 
 **Yggdrasil never leaves "Connecting".** No peer is answering. Add more peers on the
-Peers tab, and prefer ones geographically close to you. Public peers go down
+Peers screen, and prefer ones geographically close to you. Public peers go down
 regularly, so a list that worked last month may be entirely dead.
 
 **Yggdrasil is up but the tunnel layer stays "Pinging server…".** The overlay works
@@ -308,4 +311,6 @@ actually running at.
 
 **It worked, then stopped after the screen was off for a while.** Exempt Holowbark
 from battery optimisation. Android suspends the process otherwise, and the overlay
-peers time out.
+peers time out. Turning on **Settings → Auto-recover** also helps: it rebuilds the
+overlay when the server stops answering, and probes only while the tunnel is idle,
+so an actively used tunnel costs nothing.
