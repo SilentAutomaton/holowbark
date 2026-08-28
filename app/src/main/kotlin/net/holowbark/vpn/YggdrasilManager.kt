@@ -215,16 +215,18 @@ class YggdrasilManager(
         val arr = JSONArray(json)
         (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
-            // Yggdrasil mobile uses capitalized field names (URI, Up, Uptime, Latency …)
+            // Field names come from core.PeerInfo. Uptime and Latency are Go
+            // time.Duration values, so they arrive as nanoseconds.
             val latencyNanos = o.optLong("Latency", -1L)
+            val uptimeNanos = o.optLong("Uptime", -1L)
             YggNetworkState.PeerInfo(
                 uri       = o.optString("URI", o.optString("uri", "?")),
                 up        = o.optBoolean("Up", o.optBoolean("up", false)),
                 inbound   = o.optBoolean("Inbound", o.optBoolean("inbound", false)),
                 latencyMs = if (latencyNanos > 0) latencyNanos / 1_000_000.0 else -1.0,
-                uptimeSec = o.optDouble("Uptime", o.optDouble("uptime", -1.0)),
-                bytesSent  = o.optLong("Bytes_Sent",  o.optLong("bytes_sent",  0L)),
-                bytesRecvd = o.optLong("Bytes_Recvd", o.optLong("bytes_recvd", 0L)),
+                uptimeSec = if (uptimeNanos > 0) uptimeNanos / 1_000_000_000.0 else -1.0,
+                bytesSent  = o.optLong("TXBytes", 0L),
+                bytesRecvd = o.optLong("RXBytes", 0L),
                 lastError  = o.optString("LastError",  o.optString("last_error",  "")),
             )
         }
