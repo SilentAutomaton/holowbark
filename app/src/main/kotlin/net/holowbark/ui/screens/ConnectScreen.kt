@@ -17,7 +17,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import net.holowbark.ui.TunnelViewModel
+import kotlinx.coroutines.delay
 import net.holowbark.ui.components.MeshRing
+import net.holowbark.ui.peerErrorSummary
+import net.holowbark.vpn.YggNetworkState
 import net.holowbark.vpn.LayerState
 import net.holowbark.vpn.TunnelStatus
 import net.holowbark.vpn.VpnState
@@ -37,6 +40,18 @@ fun ConnectScreen(
     val awgConfig by vm.awgConfig.collectAsState()
     val selectedPeers by vm.selectedPeers.collectAsState()
     val error by vm.errorMessage.collectAsState()
+    val livePeers by YggNetworkState.peers.collectAsState()
+
+    // "Finding peers…" forever tells the user nothing. After a while, say what is
+    // actually happening instead: how many peers answered, and why the rest did not.
+    var stalled by remember { mutableStateOf(false) }
+    LaunchedEffect(status.overall, status.ygg) {
+        stalled = false
+        if (status.overall == VpnState.CONNECTING && status.ygg != LayerState.UP) {
+            delay(STALL_AFTER_MS)
+            stalled = true
+        }
+    }
 
     error?.let { message ->
         AlertDialog(
@@ -47,7 +62,12 @@ fun ConnectScreen(
     }
 
     val hasConfig = awgConfig != null
-    val labels = statusLabels(status, hasConfig, selectedPeers.size)
+    val labels = statusLabels(
+        status = status,
+        hasConfig = hasConfig,
+        peerCount = selectedPeers.size,
+        stallDetail = if (stalled) stallDetail(selectedPeers.size, livePeers) else null,
+    )
 
     Scaffold(
         topBar = {
@@ -154,8 +174,27 @@ private fun ConnectButton(
     }
 }
 
+/**
+ * What to say once the overlay has plainly failed to come up. Facts only: the
+ * counts, and Yggdrasil's own verdict on why. "Check your connection" would say
+ * nothing the user cannot already see.
+ */
+private fun stallDetail(selected: Int, live: List<YggNetworkState.PeerInfo>): String {
+    val answered = live.count { it.up }
+    val reason = live.firstNotNullOfOrNull { peerErrorSummary(it.lastError) }
+    val counts = when {
+        selected == 0 -> "No peers selected"
+        answered == 0 -> "None of $selected peers answered"
+        else -> "$answered of $selected peers answered"
+    }
+    return if (reason != null) "$counts — $reason" else counts
+}
+
 private fun VpnState.isStoppable() =
     this == VpnState.CONNECTED || this == VpnState.CONNECTING || this == VpnState.ERROR
+
+/** Long enough that a slow network is not accused of being blocked. */
+private const val STALL_AFTER_MS = 15_000L
 
 private class StatusLabels(
     val action: String,
@@ -171,7 +210,12 @@ private class StatusLabels(
 
 /** One word for what the tunnel is doing, and the one fact that matters in it. */
 @Composable
-private fun statusLabels(status: TunnelStatus, hasConfig: Boolean, peerCount: Int): StatusLabels {
+private fun statusLabels(
+    status: TunnelStatus,
+    hasConfig: Boolean,
+    peerCount: Int,
+    stallDetail: String?,
+): StatusLabels {
     if (!hasConfig) {
         return StatusLabels("Connect", "No server", "Import a config in Settings to begin")
     }
@@ -186,8 +230,9 @@ private fun statusLabels(status: TunnelStatus, hasConfig: Boolean, peerCount: In
             action = "Cancel",
             state = "Connecting",
             detail = when {
-                status.ygg != LayerState.UP -> "Finding peers…"
-                else -> "Reaching server…"
+                status.ygg == LayerState.UP -> "Reaching server…"
+                stallDetail != null -> stallDetail
+                else -> "Finding peers…"
             },
         )
         VpnState.ERROR -> StatusLabels(

@@ -26,6 +26,7 @@ import net.holowbark.vpn.YggNetworkState
 import kotlin.math.abs
 import net.holowbark.ui.copyToClipboard
 import net.holowbark.ui.latencyColor
+import net.holowbark.ui.peerErrorSummary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -296,19 +297,7 @@ private fun LivePeerRow(peer: YggNetworkState.PeerInfo, onRemove: () -> Unit) {
                 )
 
                 // Inbound badge + error
-                val errorText = peer.lastError
-                    .takeIf { it.isNotBlank() && it != "null" }
-                    ?.let { raw ->
-                        // Trim raw JSON dial errors to a short human-readable form
-                        if (raw.startsWith("{")) {
-                            runCatching {
-                                val op  = Regex("\"Op\":\"([^\"]+)\"").find(raw)?.groupValues?.get(1)
-                                val err = Regex("\"Err\":\"([^\"]+)\"").find(raw)?.groupValues?.get(1)
-                                    ?: Regex("\"Err\":\\{[^}]*\"Err\":\"([^\"]+)\"").find(raw)?.groupValues?.get(1)
-                                if (op != null && err != null) "$op: $err" else raw
-                            }.getOrDefault(raw)
-                        } else raw
-                    }
+                val errorText = peerErrorSummary(peer.lastError)
                 if (peer.inbound || errorText != null) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (peer.inbound) {

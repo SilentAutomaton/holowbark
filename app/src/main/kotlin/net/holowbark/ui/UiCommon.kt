@@ -24,6 +24,22 @@ fun latencyColor(ms: Number): Color = when {
     else                -> MaterialTheme.colorScheme.error
 }
 
+/**
+ * Yggdrasil reports a dial failure as a raw JSON blob. Reduce it to the two fields
+ * a person can act on — what was attempted and what went wrong — or null when there
+ * is nothing worth showing.
+ */
+fun peerErrorSummary(lastError: String): String? =
+    lastError.takeIf { it.isNotBlank() && it != "null" }?.let { raw ->
+        if (!raw.startsWith("{")) return@let raw
+        runCatching {
+            val op = Regex("\"Op\":\"([^\"]+)\"").find(raw)?.groupValues?.get(1)
+            val err = Regex("\"Err\":\"([^\"]+)\"").find(raw)?.groupValues?.get(1)
+                ?: Regex("\"Err\":\\{[^}]*\"Err\":\"([^\"]+)\"").find(raw)?.groupValues?.get(1)
+            if (op != null && err != null) "$op: $err" else raw
+        }.getOrDefault(raw)
+    }
+
 fun Context.copyToClipboard(label: String, text: String) {
     val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
