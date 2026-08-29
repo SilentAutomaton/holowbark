@@ -1,6 +1,7 @@
 package net.holowbark.vpn
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -15,12 +16,75 @@ class PeerUriTest {
     }
 
     @Test
-    fun parse_acceptsEveryTransportYggdrasilPeersOver() {
-        PEER_SCHEMES.forEach { scheme ->
+    fun parse_acceptsEveryDirectTransport() {
+        listOf("tcp", "tls", "quic", "ws", "wss").forEach { scheme ->
             val uri = parse("$scheme://example.org:443")
             assertEquals(scheme, uri.scheme)
             assertEquals(443, uri.port)
+            assertNull(uri.path)
         }
+    }
+
+    @Test
+    fun parse_acceptsProxyTransportsWithATarget() {
+        listOf("socks", "sockstls").forEach { scheme ->
+            val uri = parse("$scheme://127.0.0.1:1080/example.org:443")
+            assertEquals(scheme, uri.scheme)
+            assertEquals("127.0.0.1", uri.host)
+            assertEquals(1080, uri.port)
+            // The path is the peer the proxy dials, not a resource on the proxy.
+            assertEquals("/example.org:443", uri.path)
+        }
+    }
+
+    @Test
+    fun parse_keepsTheWebSocketPath() {
+        // Yggdrasil cannot listen on wss, so a TLS WebSocket peer is always a
+        // reverse proxy forwarding one path to a local ws listener.
+        val uri = parse("wss://example.org:443/obscure/path")
+        assertEquals("example.org", uri.host)
+        assertEquals("/obscure/path", uri.path)
+        assertEquals("wss://example.org:443/obscure/path", uri.toString())
+    }
+
+    @Test
+    fun parse_findsThePathAfterABracketedIpv6Host() {
+        val uri = parse("ws://[2a09:5302:ffff::132a]:80/path")
+        assertEquals("2a09:5302:ffff::132a", uri.host)
+        assertEquals(80, uri.port)
+        assertEquals("/path", uri.path)
+    }
+
+    @Test
+    fun parse_rejectsAProxyUriWithNoTarget() {
+        assertEquals(PeerUriError.NO_TARGET, errorOf("socks://127.0.0.1:1080"))
+        assertEquals(PeerUriError.NO_TARGET, errorOf("socks://127.0.0.1:1080/"))
+    }
+
+    @Test
+    fun parse_rejectsAProxyTargetThatIsNotHostPort() {
+        assertEquals(PeerUriError.BAD_TARGET, errorOf("socks://127.0.0.1:1080/example.org"))
+        assertEquals(PeerUriError.BAD_TARGET, errorOf("socks://127.0.0.1:1080/:443"))
+    }
+
+    @Test
+    fun parse_rejectsAPathOnATransportThatHasNoUseForOne() {
+        listOf("tcp", "tls", "quic").forEach { scheme ->
+            assertEquals("$scheme should reject a path",
+                PeerUriError.PATH_NOT_ALLOWED, errorOf("$scheme://example.org:443/path"))
+        }
+    }
+
+    @Test
+    fun toString_roundTripsThroughTheParser() {
+        listOf(
+            "tls://example.org:443",
+            "quic://[200::1]:65535",
+            "wss://example.org:443/obscure/path",
+            "socks://127.0.0.1:1080/example.org:443",
+            "tls://example.org:443?sni=other.example",
+            "wss://example.org:443/path?key=abc",
+        ).forEach { assertEquals(it, parse(it).toString()) }
     }
 
     @Test
