@@ -35,6 +35,9 @@ import java.net.Inet6Address
 
 private const val RESTART_TEARDOWN_TIMEOUT_MS = 3_000L
 
+/** Yggdrasil keys BLAKE2b with the password, which caps it at the digest size. */
+const val MULTICAST_PASSWORD_MAX = 64
+
 class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs.of(app)
     val repo = PeerRepository(PeerDatabase.getInstance(app), app)
@@ -73,6 +76,9 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _multicastEnabled = MutableStateFlow(prefs.multicastEnabled)
     val multicastEnabled: StateFlow<Boolean> = _multicastEnabled.asStateFlow()
+
+    private val _multicastPassword = MutableStateFlow(prefs.multicastPassword)
+    val multicastPassword: StateFlow<String> = _multicastPassword.asStateFlow()
 
     private val _autoRecoverEnabled = MutableStateFlow(prefs.autoRecoverEnabled)
     val autoRecoverEnabled: StateFlow<Boolean> = _autoRecoverEnabled.asStateFlow()
@@ -125,7 +131,7 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
             peers   = _selectedPeers.value.toList(),
             awgConf = _awgConfig.value?.toConfString(),
             yggKey  = prefs.yggPrivateKey(),
-            multicast = prefs.multicastEnabled,
+            multicastPassword = prefs.activeMulticastPassword(),
         ))
     }
 
@@ -215,10 +221,24 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
         prefs.yggDnsEnabled = enabled
     }
 
+    /** Refused while no password is set — see [setMulticastPassword]. */
     fun toggleMulticast() {
         val enabled = !_multicastEnabled.value
+        if (enabled && _multicastPassword.value.isEmpty()) return
         _multicastEnabled.value = enabled
         prefs.multicastEnabled = enabled
+    }
+
+    fun setMulticastPassword(password: String) {
+        val trimmed = password.take(MULTICAST_PASSWORD_MAX)
+        _multicastPassword.value = trimmed
+        prefs.multicastPassword = trimmed
+        // Clearing the password takes discovery down with it, rather than leaving
+        // it nominally on with nothing guarding it.
+        if (trimmed.isEmpty() && _multicastEnabled.value) {
+            _multicastEnabled.value = false
+            prefs.multicastEnabled = false
+        }
     }
 
     /** Read by the service on every watchdog tick, so this takes effect immediately. */

@@ -40,12 +40,13 @@ class YggdrasilManager(
 
     // Start / stop
 
-    fun start(peers: List<String>, privateKey: String = "", multicast: Boolean = false) {
+    fun start(peers: List<String>, privateKey: String = "", multicastPassword: String = "") {
         if (ygg != null) return
-        AppLogger.i(TAG, "Starting Yggdrasil with ${peers.size} peer(s), multicast=$multicast")
+        AppLogger.i(TAG, "Starting Yggdrasil with ${peers.size} peer(s), " +
+            "discovery=${multicastPassword.isNotEmpty()}")
         peers.forEachIndexed { i, p -> AppLogger.d(TAG, "  peer[$i] = $p") }
 
-        val cfg = buildConfig(peers, privateKey, multicast)
+        val cfg = buildConfig(peers, privateKey, multicastPassword)
         val inst = Yggdrasil()
         try {
             inst.startJSON(cfg.toString().toByteArray())
@@ -236,23 +237,25 @@ class YggdrasilManager(
     }
 
     private fun buildConfig(peers: List<String>, privateKey: String,
-                            multicast: Boolean = false): JSONObject {
+                            multicastPassword: String = ""): JSONObject {
         val cfg = JSONObject()
         if (privateKey.isNotBlank()) cfg.put("PrivateKey", privateKey)
         cfg.put("Peers", JSONArray(peers))
         cfg.put("IfName", "none")
         cfg.put("IfMTU", 65535)
-        // Multicast enables automatic peer discovery on the local network.
-        // The ".*" regex matches all interfaces; Beacon=true advertises us,
-        // Listen=true accepts incoming beacons from peers on the same LAN.
-        if (multicast) {
+        // Local discovery on every interface. The password is a rendezvous filter,
+        // not encryption: Yggdrasil keys a hash with it and ignores beacons that do
+        // not match. An empty one would peer with any node on the network, and
+        // AllowedPublicKeys is not consulted for peers found this way, so discovery
+        // is only ever enabled together with a password.
+        if (multicastPassword.isNotEmpty()) {
             val mcIface = JSONObject().apply {
                 put("Regex",    ".*")
                 put("Beacon",   true)
                 put("Listen",   true)
                 put("Port",     0)      // random ephemeral port
                 put("Priority", 0)
-                put("Password", "")
+                put("Password", multicastPassword)
             }
             cfg.put("MulticastInterfaces", JSONArray().put(mcIface))
         } else {

@@ -63,7 +63,8 @@ class TunnelService : VpnService() {
         const val EXTRA_YGG_PEERS  = "peer_uris"      // ArrayList<String>
         const val EXTRA_YGG_KEY    = "ygg_key"
 
-        const val EXTRA_MULTICAST  = "ygg_multicast"  // Boolean — LAN peer discovery
+        // Shared secret for LAN discovery; empty means discovery is off.
+        const val EXTRA_MULTICAST_PASSWORD = "ygg_multicast_password"
 
         // Community resolvers run by Revertron, serving .ygg alongside ICANN, ALFIS
         // and OpenNIC. All are inside 200::/7, so they route over the overlay.
@@ -79,13 +80,13 @@ class TunnelService : VpnService() {
             peers: List<String>,
             awgConf: String?,
             yggKey: String,
-            multicast: Boolean = false,
+            multicastPassword: String = "",
         ): Intent = Intent(context, TunnelService::class.java).apply {
             action = ACTION_START
             putStringArrayListExtra(EXTRA_YGG_PEERS, ArrayList(peers))
             putExtra(EXTRA_AWG_CONF, awgConf)
             putExtra(EXTRA_YGG_KEY, yggKey)
-            putExtra(EXTRA_MULTICAST, multicast)
+            putExtra(EXTRA_MULTICAST_PASSWORD, multicastPassword)
         }
 
         fun stopIntent(context: Context): Intent =
@@ -108,7 +109,7 @@ class TunnelService : VpnService() {
     // What the overlay was started with, so recovery can start it the same way.
     private var savedPeers: List<String> = emptyList()
     private var savedYggKey: String = ""
-    private var savedMulticast: Boolean = false
+    private var savedMulticast: String = ""
 
     private var watchdogScope: CoroutineScope? = null
 
@@ -117,6 +118,7 @@ class TunnelService : VpnService() {
     @Volatile private var lastNotifText = ""
     private var dnsProxyInstance: SplitDnsProxy? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     @Volatile private var status = TunnelStatus()
     @Volatile private var consecutiveFailures = 0
@@ -136,7 +138,7 @@ class TunnelService : VpnService() {
                     awgConfig = awgConfig,
                     peers     = intent?.getStringArrayListExtra(EXTRA_YGG_PEERS).orEmpty(),
                     yggKey    = intent?.getStringExtra(EXTRA_YGG_KEY).orEmpty(),
-                    multicast = intent?.getBooleanExtra(EXTRA_MULTICAST, false) ?: false,
+                    multicastPassword = intent?.getStringExtra(EXTRA_MULTICAST_PASSWORD).orEmpty(),
                 )
                 START_STICKY
             }
@@ -156,14 +158,15 @@ class TunnelService : VpnService() {
         awgConfig: AwgConfig?,
         peers: List<String>,
         yggKey: String,
-        multicast: Boolean,
+        multicastPassword: String,
     ) {
         if (tunFd != null) {
             AppLogger.w(TAG, "VPN already running — ignoring duplicate start")
             return
         }
         AppLogger.i(TAG, "startVpn peers=${peers.size} awg=${awgConfig?.endpoint} " +
-            "mtu=${awgConfig?.effectiveMtu ?: AwgConfig.DEFAULT_MTU} multicast=$multicast")
+            "mtu=${awgConfig?.effectiveMtu ?: AwgConfig.DEFAULT_MTU} " +
+            "discovery=${multicastPassword.isNotEmpty()}")
         updateStatus {
             copy(
                 overall = VpnState.CONNECTING,
@@ -211,8 +214,8 @@ class TunnelService : VpnService() {
         // during this window are dropped rather than crashing.
         savedPeers = peers
         savedYggKey = yggKey
-        savedMulticast = multicast
-        yggMgr.start(peers, yggKey, multicast)
+        savedMulticast = multicastPassword
+        yggMgr.start(peers, yggKey, multicastPassword)
         val yggAddress = yggMgr.getAddress().ifEmpty { "200::" }
         AppLogger.i(TAG, "Yggdrasil address: $yggAddress")
 
@@ -251,6 +254,7 @@ class TunnelService : VpnService() {
         }
 
         acquireWifiLock()
+        if (multicastPassword.isNotEmpty()) acquireMulticastLock()
         if (serverAddr != null) startWatchdog(serverAddr)
         AppLogger.i(TAG, "VPN started, waiting for peer connections")
     }
@@ -445,6 +449,19 @@ class TunnelService : VpnService() {
         screenReceiver = receiver
     }
 
+    /**
+     * Android drops multicast for the app unless a lock is held, so local discovery
+     * silently receives nothing without this — it fails by doing nothing at all,
+     * which is why it is worth holding even though it costs battery.
+     */
+    private fun acquireMulticastLock() {
+        val wifi = applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
+        multicastLock = wifi?.createMulticastLock("holowbark:discovery")?.apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
     /** Wi-Fi power saving parks the radio between packets and stalls the overlay. */
     private fun acquireWifiLock() {
         val wifi = applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
@@ -465,6 +482,8 @@ class TunnelService : VpnService() {
         dnsProxyInstance = null
         wifiLock?.let { runCatching { it.release() } }
         wifiLock = null
+        multicastLock?.let { runCatching { it.release() } }
+        multicastLock = null
     }
 
     /**

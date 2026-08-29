@@ -26,6 +26,7 @@ class Prefs(private val prefs: SharedPreferences) {
         private const val YGG_PRIVATE_KEY  = "ygg_private_key"
         private const val YGG_DNS_ENABLED  = "ygg_dns_enabled"
         private const val YGG_MULTICAST     = "ygg_multicast"
+        private const val YGG_MULTICAST_PASSWORD = "ygg_multicast_password"
         private const val AUTO_RECOVER      = "auto_recover"
         private const val AWG_CONF         = "awg_conf"
         private const val AWG_CONF_RAW     = "awg_conf_raw"
@@ -82,6 +83,21 @@ class Prefs(private val prefs: SharedPreferences) {
     var multicastEnabled: Boolean
         get() = prefs.getBoolean(YGG_MULTICAST, false)
         set(v) = prefs.edit().putBoolean(YGG_MULTICAST, v).apply()
+
+    /**
+     * Shared secret for local discovery. Yggdrasil keys a BLAKE2b hash with it and
+     * drops beacons that do not match, so it decides *whose* devices we will peer
+     * with. Without one, any Yggdrasil node on the same Wi-Fi can peer with us and
+     * learn our overlay address — and AllowedPublicKeys does not apply to peers
+     * found this way.
+     */
+    var multicastPassword: String
+        get() = prefs.getString(YGG_MULTICAST_PASSWORD, "").orEmpty()
+        set(v) = prefs.edit().putString(YGG_MULTICAST_PASSWORD, v).apply()
+
+    /** The password to run with, or empty when discovery is off or unusable. */
+    fun activeMulticastPassword(): String =
+        if (multicastEnabled) multicastPassword else ""
 
     /** Restart the overlay by itself when the server stops answering through it. */
     var autoRecoverEnabled: Boolean

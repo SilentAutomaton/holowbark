@@ -86,7 +86,7 @@ class VpnTileService : TileService() {
         AppLogger.d(TAG, "Tile: starting VPN directly (${peers.size} peers)")
         startForegroundService(
             TunnelService.startIntent(
-                this, peers, awgConf, prefs.yggPrivateKey(), prefs.multicastEnabled)
+                this, peers, awgConf, prefs.yggPrivateKey(), prefs.activeMulticastPassword())
         )
     }
 

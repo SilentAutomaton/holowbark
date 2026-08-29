@@ -37,6 +37,7 @@ fun YggNetworkScreen(vm: TunnelViewModel, onBack: () -> Unit) {
     val awgConf       by vm.awgConfig.collectAsState()
     val yggDnsEnabled by vm.yggDnsEnabled.collectAsState()
     val multicastEnabled by vm.multicastEnabled.collectAsState()
+    val multicastPassword by vm.multicastPassword.collectAsState()
     val ctx           = LocalContext.current
 
     Scaffold(
@@ -186,19 +187,34 @@ fun YggNetworkScreen(vm: TunnelViewModel, onBack: () -> Unit) {
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
                             Text(
-                                "Find Yggdrasil nodes on this Wi-Fi directly. Off by default: it announces this device to the local network.",
+                                "Find your other devices on this Wi-Fi directly, with no " +
+                                "internet. The passphrase decides whose devices — every " +
+                                "device of yours needs the same one.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.outline,
                                 modifier = Modifier.weight(1f),
                             )
-                            Switch(checked = multicastEnabled,
-                                onCheckedChange = { vm.toggleMulticast() })
+                            Switch(
+                                checked = multicastEnabled,
+                                enabled = multicastPassword.isNotEmpty(),
+                                onCheckedChange = { vm.toggleMulticast() },
+                            )
                         }
-                        if (multicastEnabled) {
-                            Text("Takes effect on next connect.",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.outline)
-                        }
+                        OutlinedTextField(
+                            value = multicastPassword,
+                            onValueChange = { vm.setMulticastPassword(it) },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Passphrase") },
+                            singleLine = true,
+                            supportingText = {
+                                Text(
+                                    if (multicastPassword.isEmpty())
+                                        "Needed before discovery can be switched on."
+                                    else
+                                        "Takes effect on next connect."
+                                )
+                            },
+                        )
                     }
                 }
             }
