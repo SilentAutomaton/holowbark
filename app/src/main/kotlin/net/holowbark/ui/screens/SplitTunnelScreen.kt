@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -214,8 +215,9 @@ private fun AppRow(app: InstalledApp, checked: Boolean, onToggle: () -> Unit) {
 
     Row(
         modifier = Modifier.fillMaxWidth().heightIn(min = ROW_HEIGHT)
-            // One toggleable row, so a screen reader reads the app and its state
-            // together instead of announcing a nameless checkbox after it.
+            // One toggleable row, merged, so a screen reader reads the app and its
+            // state together instead of announcing a nameless checkbox after it.
+            .semantics(mergeDescendants = true) {}
             .toggleable(value = checked, role = Role.Checkbox, onValueChange = { onToggle() })
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,

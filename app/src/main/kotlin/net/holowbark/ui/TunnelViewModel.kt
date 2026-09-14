@@ -298,9 +298,12 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
             val pm = app.packageManager
             _installedApps.value = pm.getInstalledApplications(0)
                 // An app with no internet permission cannot be affected by this
-                // screen, and listing it only makes the real choices harder to find.
+                // screen, and a package with no launcher — a provider, a system
+                // service — is not one the user thinks of as an app at all.
+                // Listing either only makes the real choices harder to find.
                 .filter { pm.checkPermission(INTERNET_PERMISSION, it.packageName) == PERMISSION_GRANTED }
                 .filter { it.packageName != app.packageName }
+                .filter { pm.getLaunchIntentForPackage(it.packageName) != null }
                 .map { InstalledApp(it.packageName, pm.getApplicationLabel(it).toString()) }
                 .sortedBy { it.label.lowercase() }
         }

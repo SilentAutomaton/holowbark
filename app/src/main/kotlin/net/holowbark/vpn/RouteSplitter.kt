@@ -26,7 +26,7 @@ fun hostRoute(ip: InetAddress) = Route(ip, ip.maxPrefix())
  * masked off, so the result is what the route will actually cover.
  */
 fun parseSubnet(text: String): Route? {
-    val parts = text.trim().split('/')
+    val parts = text.split('/').map { it.trim() }
     if (parts.size != 2) return null
     // getByName resolves hostnames, which would mean a DNS lookup on whatever the
     // user typed. Numeric text is the only kind it must be given here.

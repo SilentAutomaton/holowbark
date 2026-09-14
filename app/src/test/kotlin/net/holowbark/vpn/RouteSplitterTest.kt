@@ -114,6 +114,11 @@ class RouteSplitterTest {
     }
 
     @Test
+    fun parseSubnet_spacesAroundTheSlash_areIgnored() {
+        assertEquals(Route(InetAddress.getByName("10.0.0.0"), 8), parseSubnet(" 10.0.0.0 / 8 "))
+    }
+
+    @Test
     fun parseSubnet_prefixOutOfRange_returnsNull() {
         assertNull(parseSubnet("10.0.0.0/33"))
     }
