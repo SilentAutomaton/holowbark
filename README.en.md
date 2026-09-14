@@ -17,7 +17,7 @@ Pre-built APKs are in [Releases](https://github.com/SilentAutomaton/holowbark/re
   <img src="docs/screenshots/connect.png" width="24%" alt="The connect screen: a ring showing peers and the tunnel">
   <img src="docs/screenshots/settings.png" width="24%" alt="Settings">
   <img src="docs/screenshots/peers.png" width="24%" alt="The peer list, with a field for adding your own">
-  <img src="docs/screenshots/network.png" width="24%" alt="Network diagnostics: address, ping, DNS, live peers">
+  <img src="docs/screenshots/network.png" width="24%" alt="Network diagnostics: address, ping, the server's key, DNS">
 </p>
 
 ## How a packet travels

@@ -17,7 +17,7 @@ Android-клиент WireGuard, который соединяется со св�
   <img src="docs/screenshots/connect.png" width="24%" alt="Экран подключения: кольцо показывает пиры и туннель">
   <img src="docs/screenshots/settings.png" width="24%" alt="Настройки">
   <img src="docs/screenshots/peers.png" width="24%" alt="Список пиров с полем для добавления своего">
-  <img src="docs/screenshots/network.png" width="24%" alt="Диагностика сети: адрес, пинг, DNS, живые пиры">
+  <img src="docs/screenshots/network.png" width="24%" alt="Диагностика сети: адрес, пинг, ключ сервера, DNS">
 </p>
 
 ## Путь пакета
