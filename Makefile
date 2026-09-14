@@ -62,6 +62,8 @@ aar: $(AAR_OUT)
 
 $(AAR_OUT): $(DEPS_STAMP)
 	@echo "==> Building holowbark.aar …"
+	@# app/libs holds only ignored files, so a fresh clone has no such directory.
+	@mkdir -p $(dir $(AAR_OUT))
 	cd $(YGG_DIR) && \
 	  PATH=$(GOPATH_BIN):$$PATH \
 	  $(GOMOBILE) bind \
