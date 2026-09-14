@@ -12,6 +12,7 @@ package awgmobile
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -34,8 +35,7 @@ type Backend struct {
 // Start creates an AmneziaWG device with a virtual (channel-backed) TUN and
 // a channel-backed UDP Bind (no real sockets — WG packets are bridged through
 // Yggdrasil by the Kotlin layer via RecvWGPacket / SendWGPacket).
-// settings is a UAPI config string. mtu must match the MTU of the platform TUN
-// the caller feeds packets from, or packets one side accepts the other drops.
+// settings is a UAPI config string. mtu is the interface MTU (use 1280).
 func (b *Backend) Start(settings string, mtu int) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -127,10 +127,12 @@ func (b *Backend) RecvWGPacket() []byte {
 	if bind == nil {
 		return nil
 	}
+	log.Printf("awg: RecvWGPacket waiting, channel has %d packet(s)", len(bind.toSend))
 	p, ok := <-bind.toSend
 	if !ok {
 		return nil
 	}
+	log.Printf("awg: RecvWGPacket got %d bytes, channel now has %d packet(s)", len(p), len(bind.toSend))
 	return p
 }
 
@@ -148,7 +150,6 @@ func (b *Backend) SendWGPacket(p []byte) {
 	copy(cp, p)
 	select {
 	case bind.toRecv <- cp:
-	case <-bind.done:
 	default: // drop if full
 	}
 }
@@ -224,31 +225,57 @@ func (c *chanTUN) Write(bufs [][]byte, offset int) (int, error) {
 
 // chanBind routes WireGuard protocol packets through Go channels instead of
 // real UDP sockets. The Kotlin layer bridges these through Yggdrasil.
+//
+// Lifecycle: AWG calls Close() + Open() on every BindUpdate (e.g. during dev.Up()).
+// Each Open() creates a fresh cycleDone channel so the new recv goroutines can be
+// stopped by the next Close(). Send() never checks cycleDone — it just queues
+// outbound packets, dropping if the channel is full (cap 64, >>11 per cycle).
 type chanBind struct {
-	toSend chan []byte // outbound: AWG → Kotlin → Yggdrasil → server
-	toRecv chan []byte // inbound:  server → Yggdrasil → Kotlin → AWG
-	done   chan struct{}
-	once   sync.Once
+	toSend    chan []byte   // outbound: AWG → Kotlin → Yggdrasil → server
+	toRecv    chan []byte   // inbound:  server → Yggdrasil → Kotlin → AWG
+	mu        sync.Mutex
+	cycleDone chan struct{} // closed by Close() to stop current recv goroutines
+	stopping  bool         // true after final close() from Backend.Stop
 }
 
 func newChanBind() *chanBind {
 	return &chanBind{
-		toSend: make(chan []byte, 64),
-		toRecv: make(chan []byte, 64),
-		done:   make(chan struct{}),
+		toSend:    make(chan []byte, 64),
+		toRecv:    make(chan []byte, 64),
+		cycleDone: make(chan struct{}),
 	}
 }
 
+// close permanently shuts down the bind (called from Backend.Stop only).
+// Closing toSend unblocks any RecvWGPacket call.
 func (b *chanBind) close() {
-	b.once.Do(func() { close(b.done) })
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.stopping {
+		b.stopping = true
+		select {
+		case <-b.cycleDone:
+		default:
+			close(b.cycleDone)
+		}
+		close(b.toSend)
+	}
 }
 
 // conn.Bind interface
 
+// Open is called by AWG's BindUpdate to (re)start receive goroutines.
+// Each call creates a fresh cycleDone so the goroutines from this cycle
+// can be stopped independently when Close() is called next.
 func (b *chanBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
+	b.mu.Lock()
+	b.cycleDone = make(chan struct{})
+	cycleDone := b.cycleDone
+	b.mu.Unlock()
+
 	recv := func(packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 		select {
-		case <-b.done:
+		case <-cycleDone:
 			return 0, net.ErrClosed
 		case p, ok := <-b.toRecv:
 			if !ok {
@@ -263,14 +290,36 @@ func (b *chanBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	return []conn.ReceiveFunc{recv}, port, nil
 }
 
+// Close is called by AWG's BindUpdate to stop the current recv goroutines.
+// It does NOT permanently disable Send — a subsequent Open() restores recv.
 func (b *chanBind) Close() error {
-	b.close()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.stopping {
+		select {
+		case <-b.cycleDone:
+		default:
+			close(b.cycleDone)
+		}
+	}
 	return nil
 }
 
 func (b *chanBind) SetMark(mark uint32) error { return nil }
 
+// Send queues outbound WireGuard packets (junk + WG handshake/data) for the
+// Kotlin bridge to read via RecvWGPacket. Drops silently if the channel is full.
+// Does NOT check cycleDone — BindUpdate's Close/Open cycle must not interrupt sends.
 func (b *chanBind) Send(bufs [][]byte, ep conn.Endpoint) error {
+	nonEmpty := 0
+	for _, buf := range bufs {
+		if len(buf) > 0 {
+			nonEmpty++
+		}
+	}
+	log.Printf("awg: chanBind.Send called with %d packet(s) (%d non-empty), channel has %d/%d slots used",
+		len(bufs), nonEmpty, len(b.toSend), cap(b.toSend))
+	queued := 0
 	for _, buf := range bufs {
 		if len(buf) == 0 {
 			continue
@@ -279,11 +328,11 @@ func (b *chanBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 		copy(cp, buf)
 		select {
 		case b.toSend <- cp:
-		case <-b.done:
-			return net.ErrClosed
-		default: // drop if full
+			queued++
+		default: // drop if full (cap 64, typically only ~11 packets per cycle)
 		}
 	}
+	log.Printf("awg: chanBind.Send queued %d/%d packets, channel now has %d", queued, nonEmpty, len(b.toSend))
 	return nil
 }
 
