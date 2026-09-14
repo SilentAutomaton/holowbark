@@ -5,14 +5,13 @@
 //   - chanBind: virtual UDP transport for WireGuard outer protocol
 //     Instead of real UDP sockets, WG packets are exchanged via Go channels.
 //     Kotlin bridges these through the Yggdrasil overlay:
-//       RecvWGPacket() → outbound WG packet → wrap in IPv6 UDP → ygg.send()
-//       ygg.recv() → unwrap IPv6 UDP → SendWGPacket() → AWG decrypts
+//     RecvWGPacket() → outbound WG packet → wrap in IPv6 UDP → ygg.send()
+//     ygg.recv() → unwrap IPv6 UDP → SendWGPacket() → AWG decrypts
 package awgmobile
 
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -35,7 +34,8 @@ type Backend struct {
 // Start creates an AmneziaWG device with a virtual (channel-backed) TUN and
 // a channel-backed UDP Bind (no real sockets — WG packets are bridged through
 // Yggdrasil by the Kotlin layer via RecvWGPacket / SendWGPacket).
-// settings is a UAPI config string. mtu is the interface MTU (use 1280).
+// settings is a UAPI config string. mtu must match the MTU of the platform TUN
+// the caller feeds packets from, or packets one side accepts the other drops.
 func (b *Backend) Start(settings string, mtu int) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -127,12 +127,10 @@ func (b *Backend) RecvWGPacket() []byte {
 	if bind == nil {
 		return nil
 	}
-	log.Printf("awg: RecvWGPacket waiting, channel has %d packet(s)", len(bind.toSend))
 	p, ok := <-bind.toSend
 	if !ok {
 		return nil
 	}
-	log.Printf("awg: RecvWGPacket got %d bytes, channel now has %d packet(s)", len(p), len(bind.toSend))
 	return p
 }
 
@@ -185,11 +183,11 @@ func (c *chanTUN) Close() error {
 	return nil
 }
 
-func (c *chanTUN) File() *os.File               { return nil }
-func (c *chanTUN) MTU() (int, error)             { return c.mtu, nil }
-func (c *chanTUN) Name() (string, error)         { return "awg0", nil }
-func (c *chanTUN) Events() <-chan tun.Event      { return c.events }
-func (c *chanTUN) BatchSize() int                { return 1 }
+func (c *chanTUN) File() *os.File           { return nil }
+func (c *chanTUN) MTU() (int, error)        { return c.mtu, nil }
+func (c *chanTUN) Name() (string, error)    { return "awg0", nil }
+func (c *chanTUN) Events() <-chan tun.Event { return c.events }
+func (c *chanTUN) BatchSize() int           { return 1 }
 
 func (c *chanTUN) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	select {
@@ -231,11 +229,11 @@ func (c *chanTUN) Write(bufs [][]byte, offset int) (int, error) {
 // stopped by the next Close(). Send() never checks cycleDone — it just queues
 // outbound packets, dropping if the channel is full (cap 64, >>11 per cycle).
 type chanBind struct {
-	toSend    chan []byte   // outbound: AWG → Kotlin → Yggdrasil → server
-	toRecv    chan []byte   // inbound:  server → Yggdrasil → Kotlin → AWG
+	toSend    chan []byte // outbound: AWG → Kotlin → Yggdrasil → server
+	toRecv    chan []byte // inbound:  server → Yggdrasil → Kotlin → AWG
 	mu        sync.Mutex
 	cycleDone chan struct{} // closed by Close() to stop current recv goroutines
-	stopping  bool         // true after final close() from Backend.Stop
+	stopping  bool          // true after final close() from Backend.Stop
 }
 
 func newChanBind() *chanBind {
@@ -311,15 +309,6 @@ func (b *chanBind) SetMark(mark uint32) error { return nil }
 // Kotlin bridge to read via RecvWGPacket. Drops silently if the channel is full.
 // Does NOT check cycleDone — BindUpdate's Close/Open cycle must not interrupt sends.
 func (b *chanBind) Send(bufs [][]byte, ep conn.Endpoint) error {
-	nonEmpty := 0
-	for _, buf := range bufs {
-		if len(buf) > 0 {
-			nonEmpty++
-		}
-	}
-	log.Printf("awg: chanBind.Send called with %d packet(s) (%d non-empty), channel has %d/%d slots used",
-		len(bufs), nonEmpty, len(b.toSend), cap(b.toSend))
-	queued := 0
 	for _, buf := range bufs {
 		if len(buf) == 0 {
 			continue
@@ -328,11 +317,9 @@ func (b *chanBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 		copy(cp, buf)
 		select {
 		case b.toSend <- cp:
-			queued++
 		default: // drop if full (cap 64, typically only ~11 packets per cycle)
 		}
 	}
-	log.Printf("awg: chanBind.Send queued %d/%d packets, channel now has %d", queued, nonEmpty, len(b.toSend))
 	return nil
 }
 
