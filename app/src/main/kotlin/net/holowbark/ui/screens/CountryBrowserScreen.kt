@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import net.holowbark.peers.models.CountryInfo
 import net.holowbark.ui.TunnelViewModel
+import net.holowbark.ui.contentWidth
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -42,7 +43,8 @@ fun CountryBrowserScreen(
             )
         }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+        Box(modifier = Modifier.fillMaxSize().padding(padding),
+            contentAlignment = Alignment.TopCenter) {
             if (isLoading) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             } else if (countries.isEmpty()) {
@@ -62,7 +64,7 @@ private fun CountryList(
     // Group by region
     val grouped = remember(countries) { countries.groupBy { it.regionSlug } }
 
-    LazyColumn {
+    LazyColumn(Modifier.contentWidth()) {
         grouped.forEach { (region, items) ->
             item(key = "header_$region") {
                 Text(

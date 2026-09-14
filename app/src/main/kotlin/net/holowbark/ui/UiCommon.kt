@@ -4,6 +4,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -12,7 +14,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+/**
+ * How wide a column of rows and prose is allowed to get. A settings row stretched
+ * across a tablet is a row nobody can tie back to its own switch, and a caption
+ * that long is one nobody reads to the end.
+ */
+val CONTENT_MAX_WIDTH = 640.dp
+
+/**
+ * For the scrolling container of a screen that is a list; centre it in a Box.
+ * The cap goes first: fillMaxWidth would otherwise fix the width at the parent's
+ * and leave the alignment nothing to centre.
+ */
+fun Modifier.contentWidth(): Modifier = widthIn(max = CONTENT_MAX_WIDTH).fillMaxWidth()
 
 /** Shared by every screen that shows a round-trip time, so the bands agree. */
 @Composable

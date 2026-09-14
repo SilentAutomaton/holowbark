@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import net.holowbark.ui.TunnelViewModel
+import net.holowbark.ui.contentWidth
 
 /**
  * Everything the tunnel will dial, whether it came from the public list or was
@@ -71,8 +72,9 @@ fun SelectedPeersScreen(
             }
         },
     ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
+            modifier = Modifier.contentWidth(),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -121,6 +123,7 @@ fun SelectedPeersScreen(
         }
     }
 }
+        }
 
 @Composable
 private fun SelectedPeerRow(uri: String, onRemove: () -> Unit) {

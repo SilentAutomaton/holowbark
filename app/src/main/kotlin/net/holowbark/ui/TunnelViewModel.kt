@@ -89,6 +89,9 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     private val _autoRecoverEnabled = MutableStateFlow(prefs.autoRecoverEnabled)
     val autoRecoverEnabled: StateFlow<Boolean> = _autoRecoverEnabled.asStateFlow()
 
+    private val _oledTheme = MutableStateFlow(prefs.oledTheme)
+    val oledTheme: StateFlow<Boolean> = _oledTheme.asStateFlow()
+
     private val _bypassedApps = MutableStateFlow(prefs.bypassedApps)
     val bypassedApps: StateFlow<Set<String>> = _bypassedApps.asStateFlow()
 
@@ -262,6 +265,12 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
             _multicastEnabled.value = false
             prefs.multicastEnabled = false
         }
+    }
+
+    fun toggleOledTheme() {
+        val enabled = !_oledTheme.value
+        _oledTheme.value = enabled
+        prefs.oledTheme = enabled
     }
 
     /** Read by the service on every watchdog tick, so this takes effect immediately. */

@@ -10,6 +10,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import net.holowbark.ui.AppNavHost
 import net.holowbark.ui.HolowbarkTheme
@@ -33,7 +35,8 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermissionIfNeeded()
         setContent {
             vm = viewModel()
-            HolowbarkTheme {
+            val oled by vm.oledTheme.collectAsState()
+            HolowbarkTheme(oled = oled) {
                 AppNavHost(vm = vm, onRequestVpnPermission = ::requestVpnPermission)
             }
         }

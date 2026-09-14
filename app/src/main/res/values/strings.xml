@@ -45,6 +45,9 @@
     <string name="split_apps_no_match">No app matches “%1$s”.</string>
     <string name="split_next_connect">Changes apply the next time you connect.</string>
 
+    <string name="oled_title">OLED black</string>
+    <string name="oled_subtitle">Pure black background. An OLED screen keeps those pixels off, and what sits on top keeps its contrast.</string>
+
     <string name="net_server_key">Server key</string>
     <string name="net_server_key_unknown">Not known yet. It arrives with the server\'s first reply.</string>
     <string name="net_server_key_caption">Lets the tunnel address the server directly instead of looking its key up first.</string>

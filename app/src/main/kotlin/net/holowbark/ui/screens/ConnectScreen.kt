@@ -2,6 +2,8 @@ package net.holowbark.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -14,8 +16,11 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import net.holowbark.ui.CONTENT_MAX_WIDTH
 import net.holowbark.ui.TunnelViewModel
 import kotlinx.coroutines.delay
 import net.holowbark.ui.components.MeshRing
@@ -81,64 +86,127 @@ fun ConnectScreen(
             )
         },
     ) { padding ->
-        Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                MeshRing(
-                    yggState = status.ygg,
-                    yggPeers = status.yggPeers,
-                    awgState = status.awg,
-                )
-                ConnectButton(
-                    label = labels.action,
-                    enabled = hasConfig,
-                    // The ring is decoration to a screen reader; the button carries
-                    // the whole state as a sentence.
-                    description = "${labels.action}. ${labels.state}. ${labels.detail}",
-                    onClick = {
-                        if (status.overall.isStoppable()) vm.disconnect()
-                        else onRequestVpnPermission()
-                    },
-                )
-            }
-
-            Spacer(Modifier.height(32.dp))
-
-            Text(
-                text = labels.state,
-                style = MaterialTheme.typography.titleMedium,
-                color = labels.color(),
+        val ring: @Composable (Dp) -> Unit = { diameter ->
+            RingAndButton(
+                status = status,
+                labels = labels,
+                enabled = hasConfig,
+                diameter = diameter,
+                onClick = {
+                    if (status.overall.isStoppable()) vm.disconnect()
+                    else onRequestVpnPermission()
+                },
             )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = labels.detail,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-                textAlign = TextAlign.Center,
-                fontFamily = if (labels.detailIsAddress) FontFamily.Monospace else null,
-                fontSize = if (labels.detailIsAddress) 12.sp else 13.sp,
-            )
-
+        }
+        val caption: @Composable ColumnScope.() -> Unit = {
+            TunnelStatusText(labels)
             // Restarting the tunnel layer is something you reach for while watching
             // it fail, so it stays here rather than in settings.
             if (status.overall == VpnState.CONNECTED || status.overall == VpnState.CONNECTING) {
                 Spacer(Modifier.height(24.dp))
-                TextButton(
-                    onClick = vm::restartAwg,
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = if (status.awg == LayerState.ERROR)
-                            MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline,
-                    ),
+                RestartTunnelButton(status.awg, vm::restartAwg)
+            }
+        }
+
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            // The ring is the one thing that has to fit whole, so it is measured
+            // against the shorter side of whatever space is left.
+            val diameter = (minOf(maxWidth, maxHeight) * RING_SHARE)
+                .coerceIn(RING_MIN, RING_MAX)
+
+            if (maxWidth > maxHeight) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(32.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Restart tunnel")
+                    ring(diameter)
+                    Column(
+                        modifier = Modifier.widthIn(max = CONTENT_MAX_WIDTH / 2)
+                            .verticalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        content = caption,
+                    )
+                }
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    ring(diameter)
+                    Spacer(Modifier.height(32.dp))
+                    caption()
                 }
             }
         }
+    }
+}
+
+/** The share of the shorter side the ring may take, and the range it stays in. */
+private const val RING_SHARE = 0.75f
+private val RING_MIN = 160.dp
+private val RING_MAX = 300.dp
+
+/** Close to the proportion the fixed sizes had — 168 of a 260 ring — with a little
+ *  more room, because the label inside grows with the system font scale. */
+private const val BUTTON_SHARE = 0.68f
+
+@Composable
+private fun RingAndButton(
+    status: TunnelStatus,
+    labels: StatusLabels,
+    enabled: Boolean,
+    diameter: Dp,
+    onClick: () -> Unit,
+) {
+    Box(contentAlignment = Alignment.Center) {
+        MeshRing(
+            yggState = status.ygg,
+            yggPeers = status.yggPeers,
+            awgState = status.awg,
+            diameter = diameter,
+        )
+        ConnectButton(
+            label = labels.action,
+            enabled = enabled,
+            // The ring is decoration to a screen reader; the button carries
+            // the whole state as a sentence.
+            description = "${labels.action}. ${labels.state}. ${labels.detail}",
+            diameter = diameter * BUTTON_SHARE,
+            onClick = onClick,
+        )
+    }
+}
+
+@Composable
+private fun TunnelStatusText(labels: StatusLabels) {
+    Text(
+        text = labels.state,
+        style = MaterialTheme.typography.titleMedium,
+        color = labels.color(),
+    )
+    Spacer(Modifier.height(6.dp))
+    Text(
+        text = labels.detail,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.outline,
+        textAlign = TextAlign.Center,
+        fontFamily = if (labels.detailIsAddress) FontFamily.Monospace else null,
+        fontSize = if (labels.detailIsAddress) 12.sp else 13.sp,
+    )
+}
+
+@Composable
+private fun RestartTunnelButton(awgState: LayerState, onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        colors = ButtonDefaults.textButtonColors(
+            contentColor = if (awgState == LayerState.ERROR)
+                MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline,
+        ),
+    ) {
+        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Restart tunnel")
     }
 }
 
@@ -147,6 +215,7 @@ private fun ConnectButton(
     label: String,
     enabled: Boolean,
     description: String,
+    diameter: Dp,
     onClick: () -> Unit,
 ) {
     // The fill alone sits at 1.1:1 against the background, so the border is what
@@ -160,13 +229,18 @@ private fun ConnectButton(
         shape = CircleShape,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         border = BorderStroke(2.dp, if (enabled) edge else edge.copy(alpha = 0.4f)),
-        modifier = Modifier.size(168.dp).semantics { contentDescription = description },
+        modifier = Modifier.size(diameter).semantics { contentDescription = description },
     ) {
         Box(contentAlignment = Alignment.Center) {
             Text(
                 text = label.uppercase(),
                 style = MaterialTheme.typography.titleMedium,
                 letterSpacing = 2.sp,
+                maxLines = 1,
+                // A circle cannot grow with the font scale the way a line of text
+                // can, so past a point the word gives way rather than spilling.
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 8.dp),
                 color = if (enabled) MaterialTheme.colorScheme.onSurface
                         else MaterialTheme.colorScheme.outline,
             )

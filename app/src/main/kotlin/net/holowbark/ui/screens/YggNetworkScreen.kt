@@ -2,8 +2,9 @@ package net.holowbark.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -30,6 +31,9 @@ import net.holowbark.ui.copyToClipboard
 import net.holowbark.ui.latencyColor
 import net.holowbark.ui.peerErrorSummary
 
+/** Narrower than this a card stops holding its own content, so it gets the row. */
+private val CARD_MIN_WIDTH = 360.dp
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun YggNetworkScreen(vm: TunnelViewModel, onBack: () -> Unit) {
@@ -55,12 +59,18 @@ fun YggNetworkScreen(vm: TunnelViewModel, onBack: () -> Unit) {
             )
         }
     ) { padding ->
-        LazyColumn(
+        // Each card is a self-contained block, so on anything wider than a phone
+        // held upright they sit side by side instead of stretching. Staggered
+        // rather than a plain grid: the cards differ in height, and a grid row
+        // sized to its tallest card leaves holes under the short ones.
+        LazyVerticalStaggeredGrid(
+            columns = StaggeredGridCells.Adaptive(CARD_MIN_WIDTH),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalItemSpacing = 12.dp,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
                 SectionCard(title = "My Address") {

@@ -3,6 +3,7 @@ package net.holowbark.ui.screens
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
@@ -12,6 +13,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
@@ -27,6 +29,7 @@ import androidx.core.graphics.drawable.toBitmap
 import net.holowbark.R
 import net.holowbark.ui.InstalledApp
 import net.holowbark.ui.TunnelViewModel
+import net.holowbark.ui.contentWidth
 import net.holowbark.vpn.VpnState
 
 /** Adaptive icons render at their intrinsic size, which is far more than a row needs. */
@@ -46,8 +49,8 @@ fun SplitTunnelScreen(vm: TunnelViewModel, onBack: () -> Unit) {
     val bypassedApps by vm.bypassedApps.collectAsState()
     val apps by vm.installedApps.collectAsState()
     val tunnelState by vm.tunnelStatus.collectAsState()
-    var query by remember { mutableStateOf("") }
-    var addingSubnet by remember { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var addingSubnet by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { vm.loadInstalledApps() }
 
@@ -82,13 +85,12 @@ fun SplitTunnelScreen(vm: TunnelViewModel, onBack: () -> Unit) {
             }
         }
 
-        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
-            // Only worth saying while there is a tunnel for the change to miss.
-            if (tunnelState.overall != VpnState.DISCONNECTED &&
-                tunnelState.overall != VpnState.IDLE) {
-                item { Hint(stringResource(R.string.split_next_connect)) }
-            }
+        // Only worth saying while there is a tunnel for the change to miss.
+        val showHint = tunnelState.overall != VpnState.DISCONNECTED &&
+            tunnelState.overall != VpnState.IDLE
 
+        val subnetSection: LazyListScope.() -> Unit = {
+            if (showHint) item { Hint(stringResource(R.string.split_next_connect)) }
             item {
                 SectionHeader(
                     title = stringResource(R.string.split_subnets_header),
@@ -102,7 +104,6 @@ fun SplitTunnelScreen(vm: TunnelViewModel, onBack: () -> Unit) {
                     },
                 )
             }
-
             if (subnets.isEmpty()) {
                 item { Hint(stringResource(R.string.split_subnets_empty)) }
             } else {
@@ -110,9 +111,10 @@ fun SplitTunnelScreen(vm: TunnelViewModel, onBack: () -> Unit) {
                     SubnetRow(subnet = subnet, onRemove = { vm.removeBypassedSubnet(subnet) })
                 }
             }
+        }
 
+        val appSection: LazyListScope.() -> Unit = {
             item {
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 SectionHeader(title = stringResource(R.string.split_apps_header))
                 OutlinedTextField(
                     value = query,
@@ -123,7 +125,6 @@ fun SplitTunnelScreen(vm: TunnelViewModel, onBack: () -> Unit) {
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                 )
             }
-
             when {
                 apps == null -> item {
                     Box(Modifier.fillMaxWidth().padding(32.dp), Alignment.Center) {
@@ -142,13 +143,34 @@ fun SplitTunnelScreen(vm: TunnelViewModel, onBack: () -> Unit) {
                 }
             }
         }
+
+        BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
+            if (maxWidth > maxHeight) {
+                // Lying down there is room for both lists at once, and the apps —
+                // the long list, the one being searched — get the height instead of
+                // spending it on a header the subnets already used.
+                Row(Modifier.fillMaxSize()) {
+                    LazyColumn(Modifier.weight(1f).fillMaxHeight(), content = subnetSection)
+                    VerticalDivider(Modifier.padding(vertical = 8.dp))
+                    LazyColumn(Modifier.weight(1.6f).fillMaxHeight(), content = appSection)
+                }
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                    LazyColumn(Modifier.contentWidth()) {
+                        subnetSection()
+                        item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
+                        appSection()
+                    }
+                }
+            }
+        }
     }
 }
 
 @Composable
 private fun AddSubnetDialog(onDismiss: () -> Unit, onAdd: (String) -> Boolean) {
-    var text by remember { mutableStateOf("") }
-    var invalid by remember { mutableStateOf(false) }
+    var text by rememberSaveable { mutableStateOf("") }
+    var invalid by rememberSaveable { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,

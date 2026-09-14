@@ -16,6 +16,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import net.holowbark.peers.models.Peer
 import net.holowbark.ui.TunnelViewModel
+import net.holowbark.ui.contentWidth
 import net.holowbark.peers.models.countryDisplayName
 import net.holowbark.ui.latencyColor
 
@@ -80,7 +81,8 @@ fun PeerListScreen(
                 CircularProgressIndicator()
             }
         } else {
-            LazyColumn(contentPadding = padding) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            LazyColumn(modifier = Modifier.contentWidth(), contentPadding = padding) {
                 items(peers.sortedWith(compareBy(nullsLast()) { it.responseMs }), key = { it.address }) { peer ->
                     PublicPeerRow(
                         peer = peer,
@@ -91,6 +93,7 @@ fun PeerListScreen(
                 }
             }
         }
+            }
     }
 }
 

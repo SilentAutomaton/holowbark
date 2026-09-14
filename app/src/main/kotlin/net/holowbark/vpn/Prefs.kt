@@ -28,6 +28,7 @@ class Prefs(private val prefs: SharedPreferences) {
         private const val YGG_MULTICAST     = "ygg_multicast"
         private const val YGG_MULTICAST_PASSWORD = "ygg_multicast_password"
         private const val AUTO_RECOVER      = "auto_recover"
+        private const val OLED_THEME       = "oled_theme"
         private const val AWG_CONF         = "awg_conf"
         private const val SERVER_KEY       = "server_key"
         private const val BYPASS_APPS      = "bypass_apps"
@@ -124,6 +125,11 @@ class Prefs(private val prefs: SharedPreferences) {
 
     fun saveServerKey(address: String, key: String) =
         prefs.edit().putString(SERVER_KEY, "$address $key").apply()
+
+    /** Pure black background, which an OLED panel draws by keeping the pixels off. */
+    var oledTheme: Boolean
+        get() = prefs.getBoolean(OLED_THEME, false)
+        set(v) = prefs.edit().putBoolean(OLED_THEME, v).apply()
 
     /** Restart the overlay by itself when the server stops answering through it. */
     var autoRecoverEnabled: Boolean

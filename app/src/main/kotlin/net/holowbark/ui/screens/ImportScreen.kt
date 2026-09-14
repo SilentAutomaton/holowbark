@@ -11,6 +11,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -20,6 +22,7 @@ import net.holowbark.config.AwgConfigParseException
 import net.holowbark.config.parseAwgConf
 import net.holowbark.config.toConfString
 import net.holowbark.ui.TunnelViewModel
+import net.holowbark.ui.contentWidth
 private val SENSITIVE_KEYS = setOf("PrivateKey", "PresharedKey")
 
 private fun redactConfLine(line: String): String {
@@ -36,7 +39,7 @@ fun ImportScreen(
     onImported: () -> Unit,
 ) {
     val context = LocalContext.current
-    var errorText by remember { mutableStateOf<String?>(null) }
+    var errorText by rememberSaveable { mutableStateOf<String?>(null) }
     val awgConfig     by vm.awgConfig.collectAsState()
     val rawConf       by vm.rawConfText.collectAsState()
     val protocolName = awgConfig?.protocolName ?: "WireGuard"
@@ -74,10 +77,11 @@ fun ImportScreen(
     Scaffold(
         topBar = { TopAppBar(title = { Text("$protocolName Config") }) }
     ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
         Column(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
+                .contentWidth()
+                .fillMaxHeight()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -142,4 +146,5 @@ fun ImportScreen(
             }
         }
     }
+        }
 }
