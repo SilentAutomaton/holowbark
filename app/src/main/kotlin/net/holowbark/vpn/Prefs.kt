@@ -29,6 +29,9 @@ class Prefs(private val prefs: SharedPreferences) {
         private const val YGG_MULTICAST_PASSWORD = "ygg_multicast_password"
         private const val AUTO_RECOVER      = "auto_recover"
         private const val AWG_CONF         = "awg_conf"
+        private const val SERVER_KEY       = "server_key"
+        private const val BYPASS_APPS      = "bypass_apps"
+        private const val BYPASS_SUBNETS   = "bypass_subnets"
         private const val AWG_CONF_RAW     = "awg_conf_raw"
         private const val SELECTED_PEERS   = "selected_peers"
 
@@ -98,6 +101,29 @@ class Prefs(private val prefs: SharedPreferences) {
     /** The password to run with, or empty when discovery is off or unusable. */
     fun activeMulticastPassword(): String =
         if (multicastEnabled) multicastPassword else ""
+
+    /** Packages whose traffic leaves the device outside the tunnel. */
+    var bypassedApps: Set<String>
+        get() = prefs.getStringSet(BYPASS_APPS, null) ?: emptySet()
+        set(v) = prefs.edit().putStringSet(BYPASS_APPS, v).apply()
+
+    /** Destinations that stay on the physical network, in CIDR form. */
+    var bypassedSubnets: Set<String>
+        get() = prefs.getStringSet(BYPASS_SUBNETS, null) ?: emptySet()
+        set(v) = prefs.edit().putStringSet(BYPASS_SUBNETS, v).apply()
+
+    /**
+     * The server's overlay public key, learned from its first reply. Stored with
+     * the address it belongs to, because the address is a hash of the key: a
+     * different server means the stored key is not merely stale but wrong.
+     */
+    fun serverKey(address: String): String {
+        val parts = prefs.getString(SERVER_KEY, "").orEmpty().split(' ')
+        return if (parts.size == 2 && parts[0] == address) parts[1] else ""
+    }
+
+    fun saveServerKey(address: String, key: String) =
+        prefs.edit().putString(SERVER_KEY, "$address $key").apply()
 
     /** Restart the overlay by itself when the server stops answering through it. */
     var autoRecoverEnabled: Boolean

@@ -200,9 +200,13 @@ class TunnelService : VpnService() {
             onStatusChange = { state, addr, count ->
                 updateStatus { copy(ygg = state, yggAddress = addr, yggPeers = count) }
             },
+            onServerKeyLearned = { key ->
+                awgConfig?.let { Prefs.of(this).saveServerKey(it.endpoint, key) }
+            },
         )
         if (serverAddr != null) {
             yggMgr.wgServerAddr = serverAddr
+            yggMgr.serverKey = Prefs.of(this).serverKey(awgConfig!!.endpoint)
             AppLogger.i(TAG, "WG bridge: server=${awgConfig!!.endpoint} port=$serverPort")
         } else {
             AppLogger.w(TAG, "AWG endpoint is not a Yggdrasil address — WG bridge disabled")
@@ -292,6 +296,7 @@ class TunnelService : VpnService() {
 
         configureRoutes(builder, peerIps)
         configureDns(builder, awgConfig, preVpnDns, yggMgr)
+        excludeApps(builder)
         return builder.establish()
     }
 
@@ -304,9 +309,18 @@ class TunnelService : VpnService() {
         // Excluding an IPv6 peer is pointless when the physical network cannot
         // reach IPv6 at all, and costs 128 routes below API 33.
         val physicalHasIPv6 = hasPhysicalIPv6()
-        val ipv4Exclusions = peerIps.filterIsInstance<Inet4Address>().toSet()
+        val bypassed = Prefs.of(this).bypassedSubnets.mapNotNull { text ->
+            parseSubnet(text).also {
+                if (it == null) AppLogger.w(TAG, "Not a subnet, ignored: $text")
+            }
+        }
+        val ipv4Peers = peerIps.filterIsInstance<Inet4Address>()
         val ipv6Peers = peerIps.filterIsInstance<Inet6Address>()
-        val ipv6Exclusions = if (physicalHasIPv6) ipv6Peers.toSet() else emptySet()
+        val ipv4Exclusions: Set<Route> = ipv4Peers.map(::hostRoute).toSet() +
+            bypassed.filter { it.address is Inet4Address }
+        val ipv6Exclusions: Set<Route> =
+            (if (physicalHasIPv6) ipv6Peers.map(::hostRoute).toSet() else emptySet()) +
+            bypassed.filter { it.address is Inet6Address }
         if (!physicalHasIPv6 && ipv6Peers.isNotEmpty()) {
             AppLogger.w(TAG, "No physical IPv6 — ${ipv6Peers.size} IPv6 peer(s) unreachable: " +
                 ipv6Peers.joinToString { it.hostAddress ?: "?" })
@@ -315,10 +329,9 @@ class TunnelService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             builder.addRoute("0.0.0.0", 0)
             builder.addRoute("::", 0)
-            (ipv4Exclusions + ipv6Exclusions).forEach { ip ->
-                val prefix = if (ip is Inet4Address) 32 else 128
-                runCatching { builder.excludeRoute(IpPrefix(ip, prefix)) }
-                    .onFailure { AppLogger.w(TAG, "excludeRoute $ip: $it") }
+            (ipv4Exclusions + ipv6Exclusions).forEach { route ->
+                runCatching { builder.excludeRoute(IpPrefix(route.address, route.prefix)) }
+                    .onFailure { AppLogger.w(TAG, "excludeRoute $route: $it") }
             }
             AppLogger.i(TAG, "Routes: catch-all, excluding " +
                 "${ipv4Exclusions.size} IPv4 + ${ipv6Exclusions.size} IPv6")
@@ -326,7 +339,7 @@ class TunnelService : VpnService() {
         }
 
         // Below API 33 there is no excludeRoute, so the catch-all is replaced by the
-        // sub-routes that cover everything but the peers. See RouteSplitter.
+        // sub-routes that cover everything but the exclusions. See RouteSplitter.
         val ipv4Routes = buildRoutesExcluding(
             listOf(Route(InetAddress.getByAddress(ByteArray(4)), 0)), ipv4Exclusions)
         ipv4Routes.forEach { builder.addRouteOrWarn(it) }
@@ -341,6 +354,21 @@ class TunnelService : VpnService() {
         ipv6Routes.forEach { builder.addRouteOrWarn(it) }
         AppLogger.i(TAG, "Routes: ${ipv4Routes.size} IPv4 + ${ipv6Routes.size} IPv6, excluding " +
             "${ipv4Exclusions.size} + ${ipv6Exclusions.size} (API < 33)")
+    }
+
+    /**
+     * Keep the chosen apps off the tunnel entirely. A package that has since been
+     * uninstalled throws, and the only sane answer is to carry on without it.
+     */
+    private fun excludeApps(builder: Builder) {
+        val apps = Prefs.of(this).bypassedApps
+        if (apps.isEmpty()) return
+        val excluded = apps.count { pkg ->
+            runCatching { builder.addDisallowedApplication(pkg) }
+                .onFailure { AppLogger.w(TAG, "addDisallowedApplication $pkg: $it") }
+                .isSuccess
+        }
+        AppLogger.i(TAG, "Apps outside the tunnel: $excluded of ${apps.size}")
     }
 
     private fun Builder.addRouteOrWarn(route: Route) {
@@ -673,8 +701,16 @@ class TunnelService : VpnService() {
                 restartAwg()
             }
             else -> {
-                AppLogger.i(TAG, "Recovery: restarting Yggdrasil")
-                restartYgg()
+                // A node that answers nodeinfo is reachable through the mesh, so the
+                // overlay is not what is broken — restarting it would cost every peer
+                // connection for nothing.
+                if (ygg?.probeServer() == true) {
+                    AppLogger.i(TAG, "Recovery: server answers in the mesh — restarting the tunnel layer")
+                    restartAwg()
+                } else {
+                    AppLogger.i(TAG, "Recovery: restarting Yggdrasil")
+                    restartYgg()
+                }
             }
         }
     }

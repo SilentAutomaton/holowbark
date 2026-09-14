@@ -2,6 +2,7 @@ package net.holowbark.vpn
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -78,6 +79,19 @@ class PacketCodecTest {
         val packet = buildIPv6UDP(serverAddr, ourAddr, 44555, WG_LOCAL_PORT, payload)
         assertNull(packet.copyOf(40).extractWGPayload(serverAddr))
         assertNull(packet.copyOf(packet.size - 2).extractWGPayload(serverAddr))
+    }
+
+    @Test
+    fun isIpv6To_matchesTheDestinationAndNotTheSource() {
+        val packet = buildIPv6UDP(ourAddr, serverAddr, 51820, 44555, payload)
+        assertTrue(packet.isIpv6To(serverAddr))
+        assertFalse(packet.isIpv6To(ourAddr))
+    }
+
+    @Test
+    fun isIpv6To_rejectsATruncatedPacket() {
+        val packet = buildIPv6UDP(ourAddr, serverAddr, 51820, 44555, payload)
+        assertFalse(packet.copyOf(20).isIpv6To(serverAddr))
     }
 
     @Test

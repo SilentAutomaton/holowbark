@@ -19,7 +19,8 @@
 ANDROID_HOME    ?= $(HOME)/android-sdk
 ANDROID_NDK_HOME?= $(ANDROID_HOME)/ndk/27.2.12479018
 JAVA_HOME       ?= /usr/lib/jvm/java-17-openjdk
-GOMOBILE        := $(HOME)/go/bin/gomobile
+GOPATH_BIN      := $(shell go env GOPATH)/bin
+GOMOBILE        ?= $(GOPATH_BIN)/gomobile
 SDKMANAGER      := $(ANDROID_HOME)/cmdline-tools/latest/bin/sdkmanager
 
 GOLIBS_DIR      := $(HOME)/proj/code/go_libs
@@ -49,7 +50,7 @@ aar: $(AAR_OUT)
 $(AAR_OUT): $(YGG_DIR)/go.mod $(AWG_WRAPPER_DIR)/awgmobile.go
 	@echo "==> Building holowbark.aar …"
 	cd $(YGG_DIR) && \
-	  PATH=$(HOME)/go/bin:$$PATH \
+	  PATH=$(GOPATH_BIN):$$PATH \
 	  $(GOMOBILE) bind \
 	    -target android \
 	    -androidapi 26 \

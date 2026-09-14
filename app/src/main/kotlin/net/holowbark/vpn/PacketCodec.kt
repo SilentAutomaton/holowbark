@@ -61,6 +61,13 @@ fun ByteArray.extractWGPayload(expectedSrcAddr: ByteArray): ByteArray? {
     return udpPayload()
 }
 
+/** True when this IPv6 packet is addressed to [addr], which must be 16 bytes. */
+fun ByteArray.isIpv6To(addr: ByteArray): Boolean {
+    if (size < IPV6_HEADER_LEN || !isIpv6()) return false
+    for (i in 0..15) if (this[24 + i] != addr[i]) return false
+    return true
+}
+
 /** The UDP payload of an IPv6 datagram, or null when the length field does not fit. */
 fun ByteArray.udpPayload(): ByteArray? {
     val start = IPV6_HEADER_LEN + UDP_HEADER_LEN

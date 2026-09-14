@@ -5,6 +5,7 @@ import mobile.Yggdrasil
 import net.holowbark.AppLogger
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.Inet6Address
 import java.util.concurrent.ConcurrentHashMap
 
 class YggdrasilManager(
@@ -12,6 +13,8 @@ class YggdrasilManager(
     /** Called when Yggdrasil receives an inbound WG protocol packet from the server. */
     private val onWGPacket: ((ByteArray) -> Unit)? = null,
     private val onStatusChange: (state: LayerState, address: String, peerCount: Int) -> Unit = { _, _, _ -> },
+    /** Called once the server's overlay key becomes known, so it can be kept. */
+    private val onServerKeyLearned: (String) -> Unit = {},
 ) {
     companion object {
         private const val TAG = "YggdrasilManager"
@@ -21,6 +24,7 @@ class YggdrasilManager(
          *  chain is gated on the transition — so poll hard for it. */
         private const val POLL_INTERVAL_NO_PEERS     = 1_000L
         private const val PING_TIMEOUT_MS            = 4_000L
+        private const val PROBE_TIMEOUT_MS           = 4_000L
     }
 
     // Rebuilt on every start: a cancelled scope can never launch again, and the
@@ -29,6 +33,8 @@ class YggdrasilManager(
     @Volatile private var ygg: Yggdrasil? = null
     /** AWG server 16-byte IPv6 address; packets from this src go to [onWGPacket]. */
     @Volatile var wgServerAddr: ByteArray? = null
+    /** The server's overlay public key, empty until restored or learned. */
+    @Volatile var serverKey: String = ""
     /** Set by TunnelService while the screen is off, to reduce battery drain. */
     @Volatile var slowPolling: Boolean = false
     /** Split-DNS proxy; receives Yggdrasil DNS responses before they reach the TUN. */
@@ -84,11 +90,38 @@ class YggdrasilManager(
     }
 
     fun writePacket(packet: ByteArray) {
+        val inst = ygg ?: return
+        val key = serverKey
+        val server = wgServerAddr
         try {
-            ygg?.send(packet)
+            // Addressing the server by key skips the address-to-key lookup, which
+            // buffers only one packet while it runs and expires after two minutes
+            // of silence — so the packet that wakes an idle tunnel is the one the
+            // lookup would drop.
+            if (key.isNotEmpty() && server != null && packet.isIpv6To(server)) {
+                inst.sendToKey(packet, key)
+            } else {
+                inst.send(packet)
+            }
         } catch (e: Exception) {
             AppLogger.w(TAG, "send: $e")
         }
+    }
+
+    /**
+     * Whether the server answers a nodeinfo request. That rides the protocol layer
+     * and needs no session, so a true here with a failing ping means the mesh path
+     * is fine and the tunnel on top of it is not. False while the key is unknown.
+     *
+     * Blocks for up to [timeoutMs]; call it off the main thread.
+     */
+    fun probeServer(timeoutMs: Long = PROBE_TIMEOUT_MS): Boolean {
+        val key = serverKey
+        if (key.isEmpty()) return false
+        return runCatching { ygg?.probeNode(key, timeoutMs) }.getOrElse {
+            AppLogger.w(TAG, "probeNode: $it")
+            null
+        } ?: false
     }
 
     fun getAddress(): String = runCatching { ygg?.addressString }.getOrNull() ?: ""
@@ -144,6 +177,7 @@ class YggdrasilManager(
                 if (serverAddr != null && onWGPacket != null) {
                     val wgPayload = pkt.extractWGPayload(serverAddr)
                     if (wgPayload != null) {
+                        if (serverKey.isEmpty()) learnServerKey(inst, serverAddr)
                         onWGPacket.invoke(wgPayload)
                         continue
                     }
@@ -182,6 +216,21 @@ class YggdrasilManager(
             }
         }
         AppLogger.d(TAG, "readLoop exited")
+    }
+
+    /**
+     * The overlay address is a truncated hash of the node's key, so the key can
+     * only come from the node itself. Yggdrasil records it when the server first
+     * answers, which is the moment this asks for it.
+     */
+    private fun learnServerKey(inst: Yggdrasil, serverAddr: ByteArray) {
+        val addr = runCatching { Inet6Address.getByAddress(serverAddr).hostAddress }
+            .getOrNull() ?: return
+        val key = runCatching { inst.keyForAddress(addr) }.getOrNull().orEmpty()
+        if (key.isEmpty()) return
+        serverKey = key
+        AppLogger.i(TAG, "Server key learned: ${key.take(8)}…")
+        onServerKeyLearned(key)
     }
 
     // Peer polling
