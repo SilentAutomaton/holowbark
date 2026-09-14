@@ -12,6 +12,16 @@
          lock needs this permission. Only used for Yggdrasil local discovery. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
+    <!-- API 30+ hides other packages unless they are declared here. The split
+         tunneling screen lists what the user can launch, which is what makes
+         asking for QUERY_ALL_PACKAGES unnecessary. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".HolowbarkApp"
         android:allowBackup="false"

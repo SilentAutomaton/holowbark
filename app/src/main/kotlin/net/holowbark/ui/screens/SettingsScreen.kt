@@ -12,7 +12,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import net.holowbark.R
 import net.holowbark.ui.TunnelViewModel
 
 /**
@@ -26,12 +29,15 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenServer: () -> Unit,
     onOpenPeers: () -> Unit,
+    onOpenSplit: () -> Unit,
     onOpenNetwork: () -> Unit,
     onOpenLogs: () -> Unit,
 ) {
     val awgConfig by vm.awgConfig.collectAsState()
     val selectedPeers by vm.selectedPeers.collectAsState()
     val autoRecover by vm.autoRecoverEnabled.collectAsState()
+    val bypassedApps by vm.bypassedApps.collectAsState()
+    val bypassedSubnets by vm.bypassedSubnets.collectAsState()
 
     Scaffold(
         topBar = {
@@ -62,6 +68,12 @@ fun SettingsScreen(
                 onClick = onOpenPeers,
             )
             SettingsRow(
+                icon = Icons.Default.CallSplit,
+                title = stringResource(R.string.split_title),
+                subtitle = bypassSummary(bypassedApps.size, bypassedSubnets.size),
+                onClick = onOpenSplit,
+            )
+            SettingsRow(
                 icon = Icons.Default.Lan,
                 title = "Network",
                 subtitle = "Address, live peers, DNS, discovery",
@@ -90,6 +102,17 @@ fun SettingsScreen(
             IdentityRow(vm)
         }
     }
+}
+
+/** Names both halves, because an empty one still leaves the other in force. */
+@Composable
+private fun bypassSummary(apps: Int, subnets: Int): String {
+    if (apps == 0 && subnets == 0) return stringResource(R.string.split_nothing_bypasses)
+    return stringResource(
+        R.string.split_summary,
+        pluralStringResource(R.plurals.split_apps, apps, apps),
+        pluralStringResource(R.plurals.split_subnets, subnets, subnets),
+    )
 }
 
 @Composable

@@ -17,10 +17,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import net.holowbark.R
 import net.holowbark.ui.TunnelViewModel
 import net.holowbark.vpn.YggNetworkState
 import kotlin.math.abs
@@ -147,6 +149,72 @@ fun YggNetworkScreen(vm: TunnelViewModel, onBack: () -> Unit) {
                                 )
                             }
                         }
+                    }
+                }
+            }
+
+            item {
+                val serverKey by vm.serverKey.collectAsState()
+                val probing by YggNetworkState.probing.collectAsState()
+                val probeFound by YggNetworkState.probeFound.collectAsState()
+                SectionCard(title = stringResource(R.string.net_server_key)) {
+                    Column(modifier = Modifier.padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = serverKey.ifEmpty {
+                                stringResource(R.string.net_server_key_unknown)
+                            },
+                            fontFamily = if (serverKey.isEmpty()) FontFamily.Default
+                                         else FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            stringResource(R.string.net_server_key_caption),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.outline,
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Button(
+                                onClick = { vm.probeServer() },
+                                enabled = serverKey.isNotEmpty() && !probing && selfAddr.isNotEmpty(),
+                            ) {
+                                if (probing) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(stringResource(R.string.net_probing))
+                                } else {
+                                    Icon(Icons.Default.Refresh, null,
+                                        modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(stringResource(R.string.net_probe))
+                                }
+                            }
+                            probeFound?.let { found ->
+                                Text(
+                                    text = stringResource(
+                                        if (found) R.string.net_probe_found
+                                        else R.string.net_probe_missing
+                                    ),
+                                    color = if (found) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                )
+                            }
+                        }
+                        Text(
+                            stringResource(R.string.net_probe_caption),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.outline,
+                        )
                     }
                 }
             }

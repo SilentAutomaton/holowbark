@@ -15,7 +15,9 @@ val Bark = Color(0xFF14100E)
 val Heartwood = Color(0xFF241C18)
 val Lichen = Color(0xFFA8BFA0)
 val Resin = Color(0xFFE0A24A)
-val Ash = Color(0xFF8C8279)
+// Light enough to stay readable on the warm surfaces as well as on Bark: at
+// 0xFF8C8279 secondary text measured 4.45:1 against Heartwood, below AA.
+val Ash = Color(0xFF9A8F85)
 val Brick = Color(0xFFC2604E)
 
 private val HolowbarkColors = darkColorScheme(

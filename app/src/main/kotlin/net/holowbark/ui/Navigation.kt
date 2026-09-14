@@ -15,6 +15,7 @@ private object Routes {
     const val SELECTED  = "selected"
     const val COUNTRIES = "countries"
     const val PEERS     = "peers/{countryKey}"
+    const val SPLIT     = "split"
     const val NETWORK   = "network"
     const val LOGS      = "logs"
     fun peers(key: String) = "peers/${URLEncoder.encode(key, "UTF-8")}"
@@ -43,6 +44,7 @@ fun AppNavHost(vm: TunnelViewModel, onRequestVpnPermission: () -> Unit) {
                 onBack = { nav.popBackStack() },
                 onOpenServer = { nav.navigate(Routes.SERVER) },
                 onOpenPeers = { nav.navigate(Routes.SELECTED) },
+                onOpenSplit = { nav.navigate(Routes.SPLIT) },
                 onOpenNetwork = { nav.navigate(Routes.NETWORK) },
                 onOpenLogs = { nav.navigate(Routes.LOGS) },
             )
@@ -67,6 +69,9 @@ fun AppNavHost(vm: TunnelViewModel, onRequestVpnPermission: () -> Unit) {
         composable(Routes.PEERS) { backStack ->
             val key = URLDecoder.decode(backStack.arguments?.getString("countryKey") ?: "", "UTF-8")
             PeerListScreen(vm = vm, countryKey = key, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.SPLIT) {
+            SplitTunnelScreen(vm = vm, onBack = { nav.popBackStack() })
         }
         composable(Routes.NETWORK) {
             YggNetworkScreen(vm = vm, onBack = { nav.popBackStack() })

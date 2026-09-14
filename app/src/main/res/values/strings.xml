@@ -19,4 +19,38 @@
         <item quantity="one">%d peer</item>
         <item quantity="other">%d peers</item>
     </plurals>
+
+    <string name="back">Back</string>
+    <string name="cancel">Cancel</string>
+
+    <string name="split_title">Split tunneling</string>
+    <string name="split_nothing_bypasses">Everything goes through the tunnel</string>
+    <string name="split_summary">%1$s and %2$s bypass the tunnel</string>
+    <plurals name="split_apps">
+        <item quantity="one">%d app</item>
+        <item quantity="other">%d apps</item>
+    </plurals>
+    <plurals name="split_subnets">
+        <item quantity="one">%d subnet</item>
+        <item quantity="other">%d subnets</item>
+    </plurals>
+    <string name="split_subnets_header">Bypassed subnets</string>
+    <string name="split_subnets_empty">Nothing bypasses the tunnel yet. Add a subnet to reach it on the local network while the tunnel is up.</string>
+    <string name="split_add_subnet">Add subnet</string>
+    <string name="split_subnet_label">Subnet</string>
+    <string name="split_subnet_invalid">That is not a subnet. Give an address, a slash and a prefix length — 10.0.0.0/8.</string>
+    <string name="split_remove_subnet">Remove %1$s</string>
+    <string name="split_apps_header">Apps outside the tunnel</string>
+    <string name="split_apps_search">Search apps</string>
+    <string name="split_apps_no_match">No app matches “%1$s”.</string>
+    <string name="split_next_connect">Changes apply the next time you connect.</string>
+
+    <string name="net_server_key">Server key</string>
+    <string name="net_server_key_unknown">Not known yet. It arrives with the server\'s first reply.</string>
+    <string name="net_server_key_caption">Lets the tunnel address the server directly instead of looking its key up first.</string>
+    <string name="net_probe">Look for the server</string>
+    <string name="net_probing">Looking…</string>
+    <string name="net_probe_found">In the mesh</string>
+    <string name="net_probe_missing">Not answering</string>
+    <string name="net_probe_caption">Asks the server to identify itself over the overlay. It answers without a tunnel, so a reply here with a failing ping means the tunnel is what is broken.</string>
 </resources>

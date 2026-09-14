@@ -33,6 +33,10 @@ object YggNetworkState {
     val pingMs = MutableStateFlow<Long?>(null)
     val pinging = MutableStateFlow(false)
 
+    /** Nodeinfo probe result: null = no result yet. */
+    val probeFound = MutableStateFlow<Boolean?>(null)
+    val probing = MutableStateFlow(false)
+
     /** The running manager, or null when the tunnel is stopped. */
     @Volatile var manager: YggdrasilManager? = null
 
@@ -41,5 +45,7 @@ object YggNetworkState {
         selfAddress.value = ""
         pingMs.value = null
         pinging.value = false
+        probeFound.value = null
+        probing.value = false
     }
 }

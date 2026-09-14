@@ -31,12 +31,18 @@ import net.holowbark.vpn.Prefs
 import net.holowbark.vpn.parsePeerUri
 import net.holowbark.vpn.TunnelService
 import net.holowbark.vpn.parseIpv6Bytes
+import net.holowbark.vpn.parseSubnet
 import java.net.Inet6Address
 
 private const val RESTART_TEARDOWN_TIMEOUT_MS = 3_000L
+private const val INTERNET_PERMISSION = android.Manifest.permission.INTERNET
+private const val PERMISSION_GRANTED = android.content.pm.PackageManager.PERMISSION_GRANTED
 
 /** Yggdrasil keys BLAKE2b with the password, which caps it at the digest size. */
 const val MULTICAST_PASSWORD_MAX = 64
+
+/** One entry of the app list on the split tunneling screen. */
+data class InstalledApp(val packageName: String, val label: String)
 
 class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs.of(app)
@@ -83,10 +89,27 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     private val _autoRecoverEnabled = MutableStateFlow(prefs.autoRecoverEnabled)
     val autoRecoverEnabled: StateFlow<Boolean> = _autoRecoverEnabled.asStateFlow()
 
+    private val _bypassedApps = MutableStateFlow(prefs.bypassedApps)
+    val bypassedApps: StateFlow<Set<String>> = _bypassedApps.asStateFlow()
+
+    private val _bypassedSubnets = MutableStateFlow(prefs.bypassedSubnets)
+    val bypassedSubnets: StateFlow<Set<String>> = _bypassedSubnets.asStateFlow()
+
+    /** Every app that can use the network, or null while the list is being read. */
+    private val _installedApps = MutableStateFlow<List<InstalledApp>?>(null)
+    val installedApps: StateFlow<List<InstalledApp>?> = _installedApps.asStateFlow()
+
+    /** The server's overlay key, once the tunnel has learned it. */
+    private val _serverKey = MutableStateFlow(storedServerKey())
+    val serverKey: StateFlow<String> = _serverKey.asStateFlow()
+
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val status = TunnelStatus.fromIntent(intent) ?: return
             _tunnelStatus.value = status
+            // The key is learned while connecting, and this is the only signal the
+            // UI gets that the tunnel made progress.
+            _serverKey.value = storedServerKey()
         }
     }
 
@@ -263,6 +286,63 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
             YggNetworkState.pinging.value = false
         }
     }
+
+    /**
+     * Read the installed apps once per process. Names come from the package
+     * manager on hundreds of entries, which is slow enough to block a frame.
+     */
+    fun loadInstalledApps() {
+        if (_installedApps.value != null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            val pm = app.packageManager
+            _installedApps.value = pm.getInstalledApplications(0)
+                // An app with no internet permission cannot be affected by this
+                // screen, and listing it only makes the real choices harder to find.
+                .filter { pm.checkPermission(INTERNET_PERMISSION, it.packageName) == PERMISSION_GRANTED }
+                .filter { it.packageName != app.packageName }
+                .map { InstalledApp(it.packageName, pm.getApplicationLabel(it).toString()) }
+                .sortedBy { it.label.lowercase() }
+        }
+    }
+
+    fun toggleBypassedApp(packageName: String) {
+        val current = _bypassedApps.value.toMutableSet()
+        if (!current.remove(packageName)) current.add(packageName)
+        _bypassedApps.value = current
+        prefs.bypassedApps = current
+    }
+
+    /** False when [text] is not a subnet, which is what the field reports. */
+    fun addBypassedSubnet(text: String): Boolean {
+        val route = parseSubnet(text) ?: return false
+        val canonical = "${route.address.hostAddress}/${route.prefix}"
+        _bypassedSubnets.value = _bypassedSubnets.value + canonical
+        prefs.bypassedSubnets = _bypassedSubnets.value
+        return true
+    }
+
+    fun removeBypassedSubnet(subnet: String) {
+        _bypassedSubnets.value = _bypassedSubnets.value - subnet
+        prefs.bypassedSubnets = _bypassedSubnets.value
+    }
+
+    /**
+     * Ask the server to identify itself over the overlay. Needs no tunnel and no
+     * session, so it separates an unreachable server from a broken tunnel.
+     */
+    fun probeServer() {
+        if (YggNetworkState.probing.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            YggNetworkState.probing.value = true
+            YggNetworkState.probeFound.value = null
+            YggNetworkState.probeFound.value = YggNetworkState.manager?.probeServer() ?: false
+            YggNetworkState.probing.value = false
+        }
+    }
+
+    private fun storedServerKey(): String =
+        _awgConfig.value?.endpoint?.let { prefs.serverKey(it) }.orEmpty()
 
     private fun savePeers(peers: Set<String>) { prefs.selectedPeers = peers }
 
