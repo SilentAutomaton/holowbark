@@ -1,0 +1,88 @@
+Drop the //go:linkname zone-cache pull
+
+anet keeps Go's private IPv6 zone caches warm by pulling net.zoneCache and
+golang.org/x/net/internal/socket.zoneCache in with //go:linkname. Those are
+another module's private symbols, and the cache only saves repeated zone
+lookups — which is not what Yggdrasil calls anet for. The two update calls go
+with the declarations.
+
+--- a/interface_android.go
++++ b/interface_android.go
+@@ -5,9 +5,7 @@
+ 	"errors"
+ 	"net"
+ 	"os"
+-	"sync"
+ 	"syscall"
+-	"time"
+ 	"unsafe"
+ )
+ 
+@@ -37,8 +35,6 @@
+ 		return nil, &net.OpError{Op: "route", Net: "ip+net", Source: nil, Addr: nil, Err: err}
+ 	}
+ 	if len(ift) != 0 {
+-		zoneCache.update(ift, true)
+-		zoneCacheX.update(ift, true)
+ 	}
+ 	return ift, nil
+ }
+@@ -94,8 +90,6 @@
+ 		return nil, &net.OpError{Op: "route", Net: "ip+net", Source: nil, Addr: nil, Err: err}
+ 	}
+ 	if len(ift) != 0 {
+-		zoneCache.update(ift, true)
+-		zoneCacheX.update(ift, true)
+ 	}
+ 	for _, ifi := range ift {
+ 		if name == ifi.Name {
+@@ -152,49 +146,6 @@
+ // interface information. It is used for reducing the cost of IPv6
+ // addressing scope zone resolution.
+ //
+-// Multiple names sharing the index are managed by first-come
+-// first-served basis for consistency.
+-type ipv6ZoneCache struct {
+-	sync.RWMutex                // guard the following
+-	lastFetched  time.Time      // last time routing information was fetched
+-	toIndex      map[string]int // interface name to its index
+-	toName       map[int]string // interface index to its name
+-}
+-
+-//go:linkname zoneCache net.zoneCache
+-var zoneCache ipv6ZoneCache
+-
+-//go:linkname zoneCacheX golang.org/x/net/internal/socket.zoneCache
+-var zoneCacheX ipv6ZoneCache
+-
+-// update refreshes the network interface information if the cache was last
+-// updated more than 1 minute ago, or if force is set. It reports whether the
+-// cache was updated.
+-func (zc *ipv6ZoneCache) update(ift []net.Interface, force bool) (updated bool) {
+-	zc.Lock()
+-	defer zc.Unlock()
+-	now := time.Now()
+-	if !force && zc.lastFetched.After(now.Add(-60*time.Second)) {
+-		return false
+-	}
+-	zc.lastFetched = now
+-	if len(ift) == 0 {
+-		var err error
+-		if ift, err = interfaceTable(0); err != nil {
+-			return false
+-		}
+-	}
+-	zc.toIndex = make(map[string]int, len(ift))
+-	zc.toName = make(map[int]string, len(ift))
+-	for _, ifi := range ift {
+-		zc.toIndex[ifi.Name] = ifi.Index
+-		if _, ok := zc.toName[ifi.Index]; !ok {
+-			zc.toName[ifi.Index] = ifi.Name
+-		}
+-	}
+-	return true
+-}
+-
+ // If the ifindex is zero, interfaceTable returns mappings of all
+ // network interfaces. Otherwise it returns a mapping of a specific
+ // interface.

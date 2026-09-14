@@ -227,7 +227,7 @@ ssh -L 51821:localhost:51821 user@<server>
 | Java | 17 or later |
 
 ```bash
-make setup    # first time: SDK components, gomobile, Go repository clones
+make setup    # first time: SDK components, gomobile, pinned Go sources
 make all      # holowbark.aar + debug APK
 make install  # adb install to a connected device
 ```
@@ -235,10 +235,12 @@ make install  # adb install to a connected device
 Other targets:
 
 ```bash
+make deps         # fetch the pinned Go sources and patch them
 make aar          # holowbark.aar only
 make apk          # debug APK (needs the aar)
 make apk-release  # unsigned release APK
 make rebuild      # clean-aar + all
+make deps-reset   # re-fetch the Go sources from scratch
 ```
 
 With `app/libs/holowbark.aar` already built, Gradle works directly:
@@ -255,9 +257,29 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 would each carry their own copy of the gomobile `go.Seq` runtime and collide. It is
 about 49 MB and is **not committed**; build it once with `make aar`.
 
-The gomobile entry point is `contrib/awgmobile/awgmobile.go`, the one Go file this
-repository owns. `make clone-deps` copies it into a yggdrasil-go checkout and adds
-the dependencies it needs, because it has to compile inside that module.
+Neither are the Go sources. `make deps` fetches them at the revisions pinned in the
+`Makefile` (`YGG_REF`, `ANET_REF`) into `.deps/`, then applies the patches kept in
+`deps/patches/`:
+
+| Patch | What it changes |
+|---|---|
+| `yggdrasil-go/0001-…` | exports `SendToKey`, `KeyForAddress` and `ProbeNode` to the bindings, so the tunnel can address the server by its key instead of waiting for the address-to-key lookup |
+| `yggdrasil-go/0002-…` | pins the dependencies that `contrib/awgmobile` and gomobile need |
+| `anet/0001-…` | drops a `//go:linkname` pull of Go's private IPv6 zone caches |
+
+Each patch opens with why it exists. The one machine-specific line — the `replace`
+pointing at the patched anet — is written by `make deps`, not carried in a patch.
+
+`contrib/awgmobile/awgmobile.go` is the gomobile entry point and the one Go file
+this repository owns; `make deps` copies it into the checkout, because it has to
+compile inside that module.
+
+`.deps/` is a build artefact. `make deps` resets its tracked files to the pinned
+revision before applying the patches, so an edit made there is gone on the next
+build — it belongs in a patch. To add one: edit the checkout, capture it with
+`git -C .deps/yggdrasil-go diff > deps/patches/yggdrasil-go/0003-….patch`, and the
+next `make aar` picks it up. `make deps-reset` throws the checkouts away and fetches
+them again.
 
 ## Architecture
 

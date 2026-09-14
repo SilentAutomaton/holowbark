@@ -1,0 +1,165 @@
+Expose the server's key to the mobile bindings
+
+Sending an IPv6 packet through the mobile wrapper goes to ipv6rwc, which has to
+find the destination's ed25519 key before it can write: it buffers a single
+packet while that lookup runs and forgets the answer after two minutes of
+silence. The tunnel talks to exactly one server, so it is cheaper to learn that
+key once and address the node directly.
+
+  Core.ProbeNode          nodeinfo request by key; rides the protocol layer, so
+                          it answers without an established session
+  ReadWriteCloser.KeyForAddress  the key ipv6rwc already learned for an address
+  mobile.SendToKey / KeyForAddress / ProbeNode   the three of them, bound for Kotlin
+
+diff --git a/contrib/mobile/mobile.go b/contrib/mobile/mobile.go
+index 72ea7d6..9ce73a0 100644
+--- a/contrib/mobile/mobile.go
++++ b/contrib/mobile/mobile.go
+@@ -6,7 +6,9 @@ import (
+ 	"encoding/json"
+ 	"net"
+ 	"regexp"
++	"time"
+ 
++	iwt "github.com/Arceliar/ironwood/types"
+ 	"github.com/gologme/log"
+ 
+ 	"github.com/yggdrasil-network/yggdrasil-go/src/address"
+@@ -133,6 +135,78 @@ func (m *Yggdrasil) Send(p []byte) error {
+ 	return nil
+ }
+ 
++// SendToKey sends a fully formed IPv6 packet to the node with the given public
++// key (64 hex chars), skipping the address-to-key lookup that Send relies on.
++// That lookup buffers a single packet while it runs and its result expires after
++// two minutes of silence, so an idle tunnel stalls on the packet that wakes it.
++// A caller that already knows the key does not pay for either.
++func (m *Yggdrasil) SendToKey(p []byte, peerKeyHex string) error {
++	if m.core == nil {
++		return nil
++	}
++	key, err := hex.DecodeString(peerKeyHex)
++	if err != nil || len(key) != ed25519.PublicKeySize {
++		return nil
++	}
++	_, _ = m.core.WriteTo(p, iwt.Addr(key))
++	return nil
++}
++
++// KeyForAddress returns the public key (64 hex chars) this node has learned for
++// the given overlay address, or "" while it has not heard from it. The address
++// is a truncated hash of the key, so this is the only way back to the key.
++func (m *Yggdrasil) KeyForAddress(addrStr string) string {
++	if m.iprwc == nil {
++		return ""
++	}
++	ip := net.ParseIP(addrStr)
++	if ip == nil {
++		return ""
++	}
++	ip = ip.To16()
++	if ip == nil {
++		return ""
++	}
++	var addr address.Address
++	copy(addr[:], ip)
++	key := m.iprwc.KeyForAddress(addr)
++	if key == nil {
++		return ""
++	}
++	return hex.EncodeToString(key)
++}
++
++// ProbeNode reports whether the node with the given public key answers a
++// nodeinfo request within timeoutMs. Nodeinfo needs no established session, so
++// this separates "the mesh cannot reach that node" from "the node is there but
++// the tunnel through it is down".
++func (m *Yggdrasil) ProbeNode(peerKeyHex string, timeoutMs int64) bool {
++	if m.core == nil {
++		return false
++	}
++	key, err := hex.DecodeString(peerKeyHex)
++	if err != nil || len(key) != ed25519.PublicKeySize {
++		return false
++	}
++	answered := make(chan struct{}, 1)
++	if err := m.core.ProbeNode(key, func(json.RawMessage) {
++		select {
++		case answered <- struct{}{}:
++		default:
++		}
++	}); err != nil {
++		return false
++	}
++	timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
++	defer timer.Stop()
++	select {
++	case <-answered:
++		return true
++	case <-timer.C:
++		return false
++	}
++}
++
+ // Send sends a packet from given buffer to Yggdrasil. From first byte up to length.
+ func (m *Yggdrasil) SendBuffer(p []byte, length int) error {
+ 	if m.iprwc == nil {
+diff --git a/src/core/nodeinfo.go b/src/core/nodeinfo.go
+index 698aac7..e7854e7 100644
+--- a/src/core/nodeinfo.go
++++ b/src/core/nodeinfo.go
+@@ -1,6 +1,7 @@
+ package core
+ 
+ import (
++	"crypto/ed25519"
+ 	"encoding/hex"
+ 	"encoding/json"
+ 	"errors"
+@@ -130,6 +131,20 @@ func (m *nodeinfo) _sendRes(key keyArray) {
+ 	_, _ = m.proto.core.PacketConn.WriteTo(bs, iwt.Addr(key[:]))
+ }
+ 
++// ProbeNode asks the node with the given public key for its nodeinfo and calls
++// back when the answer arrives. Nodeinfo rides the proto layer, which needs no
++// established session, so this answers "is that node reachable through the
++// mesh at all" without first waiting for a session to come up.
++func (c *Core) ProbeNode(key []byte, callback func(json.RawMessage)) error {
++	if len(key) != ed25519.PublicKeySize {
++		return fmt.Errorf("invalid public key length")
++	}
++	var kb keyArray
++	copy(kb[:], key)
++	c.proto.nodeinfo.sendReq(nil, kb, callback)
++	return nil
++}
++
+ // Admin socket stuff
+ 
+ type GetNodeInfoRequest struct {
+diff --git a/src/ipv6rwc/ipv6rwc.go b/src/ipv6rwc/ipv6rwc.go
+index 59f4f02..bcabc09 100644
+--- a/src/ipv6rwc/ipv6rwc.go
++++ b/src/ipv6rwc/ipv6rwc.go
+@@ -353,6 +353,21 @@ func (rwc *ReadWriteCloser) Subnet() address.Subnet {
+ 	return rwc.subnet
+ }
+ 
++// KeyForAddress returns the public key the node has learned for addr, or nil if
++// it has not seen traffic from it yet. The key is what core.WriteTo needs, so a
++// caller that keeps it can address the node directly instead of waiting for the
++// lookup that sendToAddress falls back to — which matters after the entry has
++// expired, not only on the first packet.
++func (rwc *ReadWriteCloser) KeyForAddress(addr address.Address) ed25519.PublicKey {
++	rwc.mutex.Lock()
++	defer rwc.mutex.Unlock()
++	info := rwc.addrToInfo[addr]
++	if info == nil {
++		return nil
++	}
++	return ed25519.PublicKey(append([]byte(nil), info.key[:]...))
++}
++
+ func (rwc *ReadWriteCloser) Read(p []byte) (n int, err error) {
+ 	return rwc.readPC(p)
+ }

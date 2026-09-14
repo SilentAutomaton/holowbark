@@ -13,3 +13,4 @@ entities.json
 .claude/settings.local.json
 *.apk
 *.idsig
+.deps/
