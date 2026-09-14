@@ -12,6 +12,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -100,12 +102,17 @@ fun ConnectScreen(
         }
         val caption: @Composable ColumnScope.() -> Unit = {
             TunnelStatusText(labels)
+            Spacer(Modifier.height(24.dp))
             // Restarting the tunnel layer is something you reach for while watching
-            // it fail, so it stays here rather than in settings.
-            if (status.overall == VpnState.CONNECTED || status.overall == VpnState.CONNECTING) {
-                Spacer(Modifier.height(24.dp))
-                RestartTunnelButton(status.awg, vm::restartAwg)
-            }
+            // it fail, so it stays here rather than in settings. It keeps its place
+            // in the layout when it does not apply: the ring is what the eye holds
+            // on to, and it must not move because a button underneath appeared.
+            RestartTunnelButton(
+                awgState = status.awg,
+                onClick = vm::restartAwg,
+                visible = status.overall == VpnState.CONNECTED ||
+                    status.overall == VpnState.CONNECTING,
+            )
         }
 
         BoxWithConstraints(
@@ -124,7 +131,9 @@ fun ConnectScreen(
                 ) {
                     ring(diameter)
                     Column(
-                        modifier = Modifier.widthIn(max = CONTENT_MAX_WIDTH / 2)
+                        // A width, not a maximum: the row is centred, so a caption
+                        // that grew with the text would shift the ring sideways.
+                        modifier = Modifier.width(CONTENT_MAX_WIDTH / 2)
                             .verticalScroll(rememberScrollState()),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         content = caption,
@@ -140,6 +149,12 @@ fun ConnectScreen(
         }
     }
 }
+
+/** Below this the button is too small for DISCONNECT at the larger type size. */
+private val LABEL_FULL_SIZE_MIN = 150.dp
+
+/** One value for both fonts the detail line can be set in, so it measures the same. */
+private val DETAIL_LINE_HEIGHT = 18.sp
 
 /** The share of the shorter side the ring may take, and the range it stays in. */
 private const val RING_SHARE = 0.75f
@@ -192,13 +207,22 @@ private fun TunnelStatusText(labels: StatusLabels) {
         textAlign = TextAlign.Center,
         fontFamily = if (labels.detailIsAddress) FontFamily.Monospace else null,
         fontSize = if (labels.detailIsAddress) 12.sp else 13.sp,
+        // Two lines whatever it says: the stall message wraps where an address does
+        // not, and monospace does not measure like the body font. Either would move
+        // the ring on a state change.
+        minLines = 2,
+        lineHeight = DETAIL_LINE_HEIGHT,
     )
 }
 
 @Composable
-private fun RestartTunnelButton(awgState: LayerState, onClick: () -> Unit) {
+private fun RestartTunnelButton(awgState: LayerState, onClick: () -> Unit, visible: Boolean) {
     TextButton(
         onClick = onClick,
+        enabled = visible,
+        modifier = Modifier
+            .alpha(if (visible) 1f else 0f)
+            .then(if (visible) Modifier else Modifier.clearAndSetSemantics {}),
         colors = ButtonDefaults.textButtonColors(
             contentColor = if (awgState == LayerState.ERROR)
                 MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline,
@@ -232,13 +256,19 @@ private fun ConnectButton(
         modifier = Modifier.size(diameter).semantics { contentDescription = description },
     ) {
         Box(contentAlignment = Alignment.Center) {
+            // DISCONNECT is four characters longer than CONNECT and has to fit the
+            // same circle, which in landscape is the width of a phone's short side.
+            // A step down the type scale rather than a computed size, so the system
+            // font scale still decides how big the step actually is.
+            val small = diameter < LABEL_FULL_SIZE_MIN
             Text(
                 text = label.uppercase(),
-                style = MaterialTheme.typography.titleMedium,
-                letterSpacing = 2.sp,
+                style = if (small) MaterialTheme.typography.labelLarge
+                        else MaterialTheme.typography.titleMedium,
+                letterSpacing = if (small) 1.sp else 2.sp,
                 maxLines = 1,
-                // A circle cannot grow with the font scale the way a line of text
-                // can, so past a point the word gives way rather than spilling.
+                // Past a point — a very large font scale — the word gives way
+                // rather than spilling out of the circle.
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(horizontal = 8.dp),
                 color = if (enabled) MaterialTheme.colorScheme.onSurface
