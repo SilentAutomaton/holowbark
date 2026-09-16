@@ -131,17 +131,23 @@ class TunnelService : VpnService() {
         return when (intent?.action) {
             ACTION_STOP        -> { stopVpn(); START_NOT_STICKY }
             ACTION_RESTART_AWG -> { restartAwg(); START_STICKY }
-            else -> {
-                val awgConfig = intent?.getStringExtra(EXTRA_AWG_CONF)
+            ACTION_START -> {
+                val awgConfig = intent.getStringExtra(EXTRA_AWG_CONF)
                     ?.let { runCatching { parseAwgConf(it) }.getOrNull() }
                 startVpn(
                     awgConfig = awgConfig,
-                    peers     = intent?.getStringArrayListExtra(EXTRA_YGG_PEERS).orEmpty(),
-                    yggKey    = intent?.getStringExtra(EXTRA_YGG_KEY).orEmpty(),
-                    multicastPassword = intent?.getStringExtra(EXTRA_MULTICAST_PASSWORD).orEmpty(),
+                    peers     = intent.getStringArrayListExtra(EXTRA_YGG_PEERS).orEmpty(),
+                    yggKey    = intent.getStringExtra(EXTRA_YGG_KEY).orEmpty(),
+                    multicastPassword = intent.getStringExtra(EXTRA_MULTICAST_PASSWORD).orEmpty(),
                 )
                 START_STICKY
             }
+            // Granting VPN consent makes the system start this service on its
+            // android.net.VpnService filter, and a sticky restart delivers a null
+            // intent. Neither carries a peer list or a config: starting a tunnel
+            // from one leaves an empty overlay that swallows the real start as a
+            // duplicate.
+            else -> START_STICKY
         }
     }
 
