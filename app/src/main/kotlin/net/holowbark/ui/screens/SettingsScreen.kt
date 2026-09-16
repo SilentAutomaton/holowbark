@@ -37,7 +37,6 @@ fun SettingsScreen(
 ) {
     val awgConfig by vm.awgConfig.collectAsState()
     val selectedPeers by vm.selectedPeers.collectAsState()
-    val autoRecover by vm.autoRecoverEnabled.collectAsState()
     val oled by vm.oledTheme.collectAsState()
     val bypassedApps by vm.bypassedApps.collectAsState()
     val bypassedSubnets by vm.bypassedSubnets.collectAsState()
@@ -93,14 +92,6 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.oled_subtitle),
                 checked = oled,
                 onToggle = vm::toggleOledTheme,
-            )
-            SettingsSwitch(
-                icon = Icons.Default.HealthAndSafety,
-                title = "Auto-recover",
-                subtitle = "Rebuild the overlay when the server stops answering. " +
-                    "Only probes while the tunnel is idle.",
-                checked = autoRecover,
-                onToggle = vm::toggleAutoRecover,
             )
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))

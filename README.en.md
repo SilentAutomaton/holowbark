@@ -340,6 +340,6 @@ actually running at.
 
 **It worked, then stopped after the screen was off for a while.** Exempt Holowbark
 from battery optimisation. Android suspends the process otherwise, and the overlay
-peers time out. Turning on **Settings → Auto-recover** also helps: it rebuilds the
-overlay when the server stops answering, and probes only while the tunnel is idle,
-so an actively used tunnel costs nothing.
+peers time out. The app repairs this by itself: when the server stops answering it
+redials the peers and, if that is not enough, rebuilds the overlay. It probes only
+while the tunnel is idle, so an actively used tunnel costs nothing.

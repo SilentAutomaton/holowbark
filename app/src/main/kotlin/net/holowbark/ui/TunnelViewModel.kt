@@ -86,8 +86,6 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     private val _multicastPassword = MutableStateFlow(prefs.multicastPassword)
     val multicastPassword: StateFlow<String> = _multicastPassword.asStateFlow()
 
-    private val _autoRecoverEnabled = MutableStateFlow(prefs.autoRecoverEnabled)
-    val autoRecoverEnabled: StateFlow<Boolean> = _autoRecoverEnabled.asStateFlow()
 
     private val _oledTheme = MutableStateFlow(prefs.oledTheme)
     val oledTheme: StateFlow<Boolean> = _oledTheme.asStateFlow()
@@ -275,13 +273,6 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
         val enabled = !_oledTheme.value
         _oledTheme.value = enabled
         prefs.oledTheme = enabled
-    }
-
-    /** Read by the service on every watchdog tick, so this takes effect immediately. */
-    fun toggleAutoRecover() {
-        val enabled = !_autoRecoverEnabled.value
-        _autoRecoverEnabled.value = enabled
-        prefs.autoRecoverEnabled = enabled
     }
 
     /** Ping the AWG server's Yggdrasil address through the overlay. */

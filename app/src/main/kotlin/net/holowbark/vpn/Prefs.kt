@@ -27,7 +27,6 @@ class Prefs(private val prefs: SharedPreferences) {
         private const val YGG_DNS_ENABLED  = "ygg_dns_enabled"
         private const val YGG_MULTICAST     = "ygg_multicast"
         private const val YGG_MULTICAST_PASSWORD = "ygg_multicast_password"
-        private const val AUTO_RECOVER      = "auto_recover"
         private const val OLED_THEME       = "oled_theme"
         private const val AWG_CONF         = "awg_conf"
         private const val SERVER_KEY       = "server_key"
@@ -141,11 +140,6 @@ class Prefs(private val prefs: SharedPreferences) {
     var oledTheme: Boolean
         get() = prefs.getBoolean(OLED_THEME, false)
         set(v) = prefs.edit().putBoolean(OLED_THEME, v).apply()
-
-    /** Restart the overlay by itself when the server stops answering through it. */
-    var autoRecoverEnabled: Boolean
-        get() = prefs.getBoolean(AUTO_RECOVER, false)
-        set(v) = prefs.edit().putBoolean(AUTO_RECOVER, v).apply()
 
     /**
      * The node's Yggdrasil identity, as the 128 hex chars (seed + public key) that

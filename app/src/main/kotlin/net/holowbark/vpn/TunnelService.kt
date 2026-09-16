@@ -844,6 +844,13 @@ class TunnelService : VpnService() {
      * the overlay for.
      */
     private suspend fun recover() {
+        // Redialling into airplane mode fails on every rung of the ladder. The
+        // network callback redials by itself when a network comes back.
+        if (physicalNetworks.isEmpty()) {
+            AppLogger.i(TAG, "Recovery: no physical network — waiting for one")
+            consecutiveFailures = 0
+            return
+        }
         val now = System.currentTimeMillis()
         if (now - lastRecoveryAt < RECOVERY_COOLDOWN_MS) return
         lastRecoveryAt = now
