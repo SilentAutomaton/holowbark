@@ -32,6 +32,7 @@ class Prefs(private val prefs: SharedPreferences) {
         private const val AWG_CONF         = "awg_conf"
         private const val SERVER_KEY       = "server_key"
         private const val BYPASS_APPS      = "bypass_apps"
+        private const val APPS_ALLOW_LIST  = "apps_allow_list"
         private const val BYPASS_SUBNETS   = "bypass_subnets"
         private const val AWG_CONF_RAW     = "awg_conf_raw"
         private const val SELECTED_PEERS   = "selected_peers"
@@ -107,6 +108,16 @@ class Prefs(private val prefs: SharedPreferences) {
     var bypassedApps: Set<String>
         get() = prefs.getStringSet(BYPASS_APPS, null) ?: emptySet()
         set(v) = prefs.edit().putStringSet(BYPASS_APPS, v).apply()
+
+    /**
+     * Read [bypassedApps] the other way round: the chosen packages are the only
+     * ones inside the tunnel, and everything else goes out on the physical
+     * network. One list, two readings — turning this on must not ask the user to
+     * pick their apps again.
+     */
+    var appsAllowList: Boolean
+        get() = prefs.getBoolean(APPS_ALLOW_LIST, false)
+        set(v) = prefs.edit().putBoolean(APPS_ALLOW_LIST, v).apply()
 
     /** Destinations that stay on the physical network, in CIDR form. */
     var bypassedSubnets: Set<String>

@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -47,6 +48,7 @@ private val ROW_HEIGHT = 56.dp
 fun SplitTunnelScreen(vm: TunnelViewModel, onBack: () -> Unit) {
     val subnets by vm.bypassedSubnets.collectAsState()
     val bypassedApps by vm.bypassedApps.collectAsState()
+    val allowList by vm.appsAllowList.collectAsState()
     val apps by vm.installedApps.collectAsState()
     val tunnelState by vm.tunnelStatus.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
@@ -116,6 +118,15 @@ fun SplitTunnelScreen(vm: TunnelViewModel, onBack: () -> Unit) {
         val appSection: LazyListScope.() -> Unit = {
             item {
                 SectionHeader(title = stringResource(R.string.split_apps_header))
+                AppsModeSelector(allowList = allowList, onSelect = vm::setAppsAllowList)
+                Hint(
+                    when {
+                        allowList && bypassedApps.isEmpty() ->
+                            stringResource(R.string.split_apps_none_inside)
+                        allowList -> stringResource(R.string.split_mode_inside_help)
+                        else -> stringResource(R.string.split_mode_outside_help)
+                    }
+                )
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
@@ -219,6 +230,37 @@ private fun SubnetRow(subnet: String, onRemove: () -> Unit) {
                 Icons.Default.Close,
                 contentDescription = stringResource(R.string.split_remove_subnet, subnet),
             )
+        }
+    }
+}
+
+/**
+ * Which side of the tunnel the ticked apps are on. Two exclusive choices, so a
+ * segmented row rather than a switch: a switch would have to be labelled with one
+ * of the two states and leave the reader to infer the other.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AppsModeSelector(allowList: Boolean, onSelect: (Boolean) -> Unit) {
+    val label = stringResource(R.string.split_mode_label)
+    SingleChoiceSegmentedButtonRow(
+        modifier = Modifier.fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 4.dp)
+            .semantics { contentDescription = label },
+    ) {
+        SegmentedButton(
+            selected = !allowList,
+            onClick = { onSelect(false) },
+            shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+        ) {
+            Text(stringResource(R.string.split_mode_outside), maxLines = 1)
+        }
+        SegmentedButton(
+            selected = allowList,
+            onClick = { onSelect(true) },
+            shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+        ) {
+            Text(stringResource(R.string.split_mode_inside), maxLines = 1)
         }
     }
 }

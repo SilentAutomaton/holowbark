@@ -40,7 +40,15 @@
     <string name="split_subnet_label">Subnet</string>
     <string name="split_subnet_invalid">That is not a subnet. Give an address, a slash and a prefix length — 10.0.0.0/8.</string>
     <string name="split_remove_subnet">Remove %1$s</string>
-    <string name="split_apps_header">Apps outside the tunnel</string>
+    <string name="split_summary_inside">Only %1$s in the tunnel</string>
+    <string name="split_summary_inside_subnets">Only %1$s in the tunnel, %2$s outside it</string>
+    <string name="split_apps_header">Apps</string>
+    <string name="split_mode_label">Which apps the tunnel carries</string>
+    <string name="split_mode_outside">Outside</string>
+    <string name="split_mode_inside">Inside</string>
+    <string name="split_mode_outside_help">The apps you pick leave the device directly. Everything else goes through the tunnel.</string>
+    <string name="split_mode_inside_help">Only the apps you pick go through the tunnel. Everything else leaves the device directly.</string>
+    <string name="split_apps_none_inside">No apps picked yet, so every app still goes through the tunnel. Pick the ones that need it.</string>
     <string name="split_apps_search">Search apps</string>
     <string name="split_apps_no_match">No app matches “%1$s”.</string>
     <string name="split_next_connect">Changes apply the next time you connect.</string>

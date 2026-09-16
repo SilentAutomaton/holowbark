@@ -302,7 +302,7 @@ class TunnelService : VpnService() {
 
         configureRoutes(builder, peerIps)
         configureDns(builder, awgConfig, preVpnDns, yggMgr)
-        excludeApps(builder)
+        applyAppSplit(builder)
         return builder.establish()
     }
 
@@ -363,18 +363,30 @@ class TunnelService : VpnService() {
     }
 
     /**
-     * Keep the chosen apps off the tunnel entirely. A package that has since been
-     * uninstalled throws, and the only sane answer is to carry on without it.
+     * Apply the app split. A package that has since been uninstalled throws, and
+     * the only sane answer is to carry on without it.
+     *
+     * In allow-list mode this app is deliberately left out, so the overlay
+     * transport keeps running outside the tunnel it carries.
      */
-    private fun excludeApps(builder: Builder) {
-        val apps = Prefs.of(this).bypassedApps
-        if (apps.isEmpty()) return
-        val excluded = apps.count { pkg ->
-            runCatching { builder.addDisallowedApplication(pkg) }
-                .onFailure { AppLogger.w(TAG, "addDisallowedApplication $pkg: $it") }
-                .isSuccess
+    private fun applyAppSplit(builder: Builder) {
+        val prefs = Prefs.of(this)
+        val apps = prefs.bypassedApps
+        if (apps.isEmpty()) {
+            // An empty allow list would be a tunnel no app can use, which reads as
+            // a dead VPN rather than as the setting it is.
+            if (prefs.appsAllowList) AppLogger.w(TAG, "Allow list is empty — every app stays in the tunnel")
+            return
         }
-        AppLogger.i(TAG, "Apps outside the tunnel: $excluded of ${apps.size}")
+        val allowList = prefs.appsAllowList
+        val applied = apps.count { pkg ->
+            runCatching {
+                if (allowList) builder.addAllowedApplication(pkg)
+                else builder.addDisallowedApplication(pkg)
+            }.onFailure { AppLogger.w(TAG, "app split $pkg: $it") }.isSuccess
+        }
+        if (allowList) AppLogger.i(TAG, "Apps inside the tunnel: $applied of ${apps.size}")
+        else AppLogger.i(TAG, "Apps outside the tunnel: $applied of ${apps.size}")
     }
 
     private fun Builder.addRouteOrWarn(route: Route) {

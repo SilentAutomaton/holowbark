@@ -41,6 +41,7 @@ fun SettingsScreen(
     val oled by vm.oledTheme.collectAsState()
     val bypassedApps by vm.bypassedApps.collectAsState()
     val bypassedSubnets by vm.bypassedSubnets.collectAsState()
+    val appsAllowList by vm.appsAllowList.collectAsState()
 
     Scaffold(
         topBar = {
@@ -74,7 +75,7 @@ fun SettingsScreen(
             SettingsRow(
                 icon = Icons.Default.CallSplit,
                 title = stringResource(R.string.split_title),
-                subtitle = bypassSummary(bypassedApps.size, bypassedSubnets.size),
+                subtitle = bypassSummary(bypassedApps.size, bypassedSubnets.size, appsAllowList),
                 onClick = onOpenSplit,
             )
             SettingsRow(
@@ -118,13 +119,14 @@ fun SettingsScreen(
 
 /** Names both halves, because an empty one still leaves the other in force. */
 @Composable
-private fun bypassSummary(apps: Int, subnets: Int): String {
+private fun bypassSummary(apps: Int, subnets: Int, allowList: Boolean): String {
     if (apps == 0 && subnets == 0) return stringResource(R.string.split_nothing_bypasses)
-    return stringResource(
-        R.string.split_summary,
-        pluralStringResource(R.plurals.split_apps, apps, apps),
-        pluralStringResource(R.plurals.split_subnets, subnets, subnets),
-    )
+    val appCount = pluralStringResource(R.plurals.split_apps, apps, apps)
+    val subnetCount = pluralStringResource(R.plurals.split_subnets, subnets, subnets)
+    // An empty allow list carries every app, so it reads as the ordinary case.
+    if (!allowList || apps == 0) return stringResource(R.string.split_summary, appCount, subnetCount)
+    if (subnets == 0) return stringResource(R.string.split_summary_inside, appCount)
+    return stringResource(R.string.split_summary_inside_subnets, appCount, subnetCount)
 }
 
 @Composable

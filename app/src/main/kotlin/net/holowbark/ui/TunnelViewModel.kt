@@ -98,6 +98,10 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     private val _bypassedSubnets = MutableStateFlow(prefs.bypassedSubnets)
     val bypassedSubnets: StateFlow<Set<String>> = _bypassedSubnets.asStateFlow()
 
+    /** True when the chosen apps are the only ones inside the tunnel. */
+    private val _appsAllowList = MutableStateFlow(prefs.appsAllowList)
+    val appsAllowList: StateFlow<Boolean> = _appsAllowList.asStateFlow()
+
     /** Every app that can use the network, or null while the list is being read. */
     private val _installedApps = MutableStateFlow<List<InstalledApp>?>(null)
     val installedApps: StateFlow<List<InstalledApp>?> = _installedApps.asStateFlow()
@@ -323,6 +327,11 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
         if (!current.remove(packageName)) current.add(packageName)
         _bypassedApps.value = current
         prefs.bypassedApps = current
+    }
+
+    fun setAppsAllowList(enabled: Boolean) {
+        _appsAllowList.value = enabled
+        prefs.appsAllowList = enabled
     }
 
     /** False when [text] is not a subnet, which is what the field reports. */
