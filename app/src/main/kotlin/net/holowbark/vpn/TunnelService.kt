@@ -17,10 +17,12 @@ import android.net.VpnService
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -48,6 +50,20 @@ class TunnelService : VpnService() {
         private const val WATCHDOG_PING_TIMEOUT_MS = 5_000L
         private const val WATCHDOG_FAILURES_BEFORE_RECOVERY = 3
         private const val RECOVERY_COOLDOWN_MS = 120_000L
+
+        /** How often the idle policy looks at what the tunnel is carrying. */
+        private const val IDLE_TICK_MS = 30_000L
+        /** Traffic in one tick below which the tunnel counts as unused. Background
+         *  sync alone keeps a pocketed phone above zero, so the line has to sit
+         *  above chatter and well below anything a person is waiting for. */
+        private const val IDLE_QUIET_BYTES = 8L * 1024
+        /** Consecutive quiet ticks, screen off, before the radio locks are let go. */
+        private const val IDLE_QUIET_TICKS = 4
+        /** Traffic after a release that means an app wants the tunnel back. */
+        private const val WAKE_BYTES = 32L * 1024
+        /** How long the overlay is given to redial before the wake probe judges it. */
+        private const val WAKE_PROBE_DELAY_MS = 5_000L
+        private const val WAKE_PROBE_ATTEMPTS = 2
 
         /** True while the VPN is actually up in this process. Prefs alone can go
          *  stale after process death/reboot — always check this alongside them. */
@@ -113,7 +129,20 @@ class TunnelService : VpnService() {
 
     private var watchdogScope: CoroutineScope? = null
 
+    /** Owns the idle countdown and the wake probe, which outlive neither the tunnel
+     *  nor each other. */
+    private var powerScope: CoroutineScope? = null
+    private var idleJob: Job? = null
+    @Volatile private var screenOn = true
+    @Volatile private var idle = false
+    /** The server's overlay address, kept for the watchdog and the wake probe. */
+    private var serverAddress = ""
+
     private var netCallback: ConnectivityManager.NetworkCallback? = null
+    /** Every non-VPN network with internet the callback currently reports. Empty in
+     *  airplane mode and out of coverage. `activeNetwork` cannot answer this: while
+     *  the tunnel is up, it is the tunnel. */
+    private val physicalNetworks = java.util.concurrent.ConcurrentHashMap.newKeySet<Network>()
     private var screenReceiver: BroadcastReceiver? = null
     @Volatile private var lastNotifText = ""
     private var dnsProxyInstance: SplitDnsProxy? = null
@@ -243,7 +272,14 @@ class TunnelService : VpnService() {
         tunFd = fd
         isRunning = true
 
-        router = PacketRouter(tunFd = fd, ygg = yggMgr, awg = awgMgr, dnsProxy = dnsProxyInstance)
+        powerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        router = PacketRouter(
+            tunFd = fd,
+            ygg = yggMgr,
+            awg = awgMgr,
+            dnsProxy = dnsProxyInstance,
+            onWake = { onActivity("an app wants the tunnel") },
+        )
         ygg = yggMgr
         awg = awgMgr
         YggNetworkState.manager = yggMgr
@@ -266,6 +302,10 @@ class TunnelService : VpnService() {
         acquireWifiLock()
         if (multicastPassword.isNotEmpty()) acquireMulticastLock()
         if (serverAddr != null) startWatchdog(serverAddr)
+        // Starting with the screen already off is the normal case for a tile tap
+        // from the lock screen, and the receiver only reports transitions.
+        screenOn = getSystemService(PowerManager::class.java)?.isInteractive != false
+        if (!screenOn) startIdleCountdown()
         AppLogger.i(TAG, "VPN started, waiting for peer connections")
     }
 
@@ -465,11 +505,14 @@ class TunnelService : VpnService() {
             .build()
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                physicalNetworks.add(network)
                 AppLogger.i(TAG, "Physical network available — retrying Ygg peers")
                 consecutiveFailures = 0
                 ygg?.retryPeers()
+                onActivity("a network came back")
             }
             override fun onLost(network: Network) {
+                physicalNetworks.remove(network)
                 AppLogger.d(TAG, "Physical network lost")
             }
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
@@ -481,11 +524,17 @@ class TunnelService : VpnService() {
         netCallback = callback
     }
 
-    /** Nobody reads the peer list with the screen off, so poll it less often. */
+    /**
+     * Nobody reads the peer list with the screen off, so poll it less often — and
+     * a phone in a pocket has no use for a radio held out of power saving either.
+     */
     private fun watchScreenState() {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                ygg?.slowPolling = intent.action == Intent.ACTION_SCREEN_OFF
+                val off = intent.action == Intent.ACTION_SCREEN_OFF
+                ygg?.slowPolling = off
+                screenOn = !off
+                if (off) startIdleCountdown() else onActivity("the screen came on")
             }
         }
         ContextCompat.registerReceiver(this, receiver, IntentFilter().apply {
@@ -515,6 +564,13 @@ class TunnelService : VpnService() {
         wifiLock?.acquire()
     }
 
+    private fun releaseRadioLocks() {
+        wifiLock?.let { runCatching { it.release() } }
+        wifiLock = null
+        multicastLock?.let { runCatching { it.release() } }
+        multicastLock = null
+    }
+
     private fun releaseResources() {
         netCallback?.let {
             runCatching {
@@ -522,14 +578,95 @@ class TunnelService : VpnService() {
             }
         }
         netCallback = null
+        physicalNetworks.clear()
         screenReceiver?.let { runCatching { unregisterReceiver(it) } }
         screenReceiver = null
         dnsProxyInstance?.stop()
         dnsProxyInstance = null
-        wifiLock?.let { runCatching { it.release() } }
-        wifiLock = null
-        multicastLock?.let { runCatching { it.release() } }
-        multicastLock = null
+        releaseRadioLocks()
+    }
+
+    /**
+     * Let the radio sleep once the screen has been off through
+     * [IDLE_QUIET_TICKS] ticks carrying less than [IDLE_QUIET_BYTES] each. A track
+     * playing into a pocketed phone moves far more than that and keeps the locks;
+     * a push heartbeat does not and no longer counts as somebody using the tunnel.
+     *
+     * Releasing happens once per idle period. Cycling the lock is what tore the
+     * overlay down in the app this policy was measured on.
+     */
+    private fun startIdleCountdown() {
+        idleJob?.cancel()
+        idleJob = powerScope?.launch {
+            var quietTicks = 0
+            var previousBytes = router?.outboundBytes ?: 0L
+            while (isActive) {
+                delay(IDLE_TICK_MS)
+                val bytes = router?.outboundBytes ?: 0L
+                val carried = bytes - previousBytes
+                previousBytes = bytes
+                quietTicks = if (!screenOn && carried < IDLE_QUIET_BYTES) quietTicks + 1 else 0
+                if (quietTicks >= IDLE_QUIET_TICKS) {
+                    enterIdle()
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun enterIdle() {
+        if (idle) return
+        idle = true
+        AppLogger.i(TAG, "Idle: releasing the radio locks until an app wants ${WAKE_BYTES / 1024} KB")
+        releaseRadioLocks()
+        router?.armIdleGate(WAKE_BYTES)
+    }
+
+    /**
+     * Come back from idle. The packet that woke us is an app asking for the
+     * network, which is also the moment to find out whether the path it needs
+     * still exists: the overlay may have lost its peers to a NAT timeout while the
+     * radio slept. The app's own retransmit carries the data once it does, so the
+     * cost of the repair is latency, not a failed request.
+     */
+    private fun onActivity(reason: String) {
+        if (screenOn) {
+            idleJob?.cancel()
+            idleJob = null
+        }
+        if (!idle) {
+            if (!screenOn) startIdleCountdown()
+            return
+        }
+        idle = false
+        powerScope?.launch {
+            AppLogger.i(TAG, "Wake ($reason): re-acquiring the radio locks and redialling")
+            acquireWifiLock()
+            if (savedMulticast.isNotEmpty()) acquireMulticastLock()
+            consecutiveFailures = 0
+            ygg?.retryPeers()
+            probeAfterWake()
+            if (!screenOn) startIdleCountdown()
+        }
+    }
+
+    /**
+     * Probe once the overlay has had a moment to redial, and once more before
+     * believing the answer. The peers were told to redial a moment ago, and a
+     * redial that is merely slow must not cost the tunnel a restart.
+     */
+    private suspend fun probeAfterWake() {
+        if (serverAddress.isEmpty()) return
+        repeat(WAKE_PROBE_ATTEMPTS) { attempt ->
+            delay(WAKE_PROBE_DELAY_MS)
+            if (ygg?.pingYgg(serverAddress, WATCHDOG_PING_TIMEOUT_MS) != null) {
+                AppLogger.i(TAG, "Wake probe: the server still answers")
+                return
+            }
+            AppLogger.d(TAG, "Wake probe: no answer (${attempt + 1}/$WAKE_PROBE_ATTEMPTS)")
+        }
+        AppLogger.w(TAG, "Wake probe: no answer — recovering now rather than at the next tick")
+        recover()
     }
 
     /**
@@ -635,6 +772,10 @@ class TunnelService : VpnService() {
         ygg?.dnsProxy = null
         awgLifecycleScope?.cancel(); awgLifecycleScope = null
         watchdogScope?.cancel(); watchdogScope = null
+        idleJob = null
+        powerScope?.cancel(); powerScope = null
+        idle = false
+        serverAddress = ""
         savedAwgConfig = null; savedAwgServerAddrBytes = null
         savedPeers = emptyList(); savedYggKey = ""
         releaseResources()
@@ -666,23 +807,22 @@ class TunnelService : VpnService() {
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         watchdogScope = scope
 
-        val address = runCatching { Inet6Address.getByAddress(serverAddr).hostAddress }
+        serverAddress = runCatching { Inet6Address.getByAddress(serverAddr).hostAddress }
             .getOrNull() ?: return
 
         scope.launch {
             while (isActive) {
                 delay(if (ygg?.slowPolling == true) WATCHDOG_INTERVAL_IDLE_MS
                       else WATCHDOG_INTERVAL_MS)
-                if (!Prefs.of(this@TunnelService).autoRecoverEnabled) {
-                    consecutiveFailures = 0
-                    continue
-                }
+                // Idle means nothing is waiting on the tunnel; the wake edge repairs
+                // it when something is, and a probe here would only spend the radio.
+                if (idle) continue
                 if (status.overall != VpnState.CONNECTED) continue
                 if (trafficSeenRecently()) {
                     consecutiveFailures = 0
                     continue
                 }
-                if (ygg?.pingYgg(address, WATCHDOG_PING_TIMEOUT_MS) != null) {
+                if (ygg?.pingYgg(serverAddress, WATCHDOG_PING_TIMEOUT_MS) != null) {
                     consecutiveFailures = 0
                     continue
                 }

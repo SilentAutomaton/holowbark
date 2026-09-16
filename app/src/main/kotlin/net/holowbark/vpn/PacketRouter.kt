@@ -20,6 +20,8 @@ class PacketRouter(
     private val ygg: YggdrasilManager,
     private val awg: AwgManager,
     private val dnsProxy: SplitDnsProxy? = null,
+    /** Called once the traffic the idle gate waits for arrives; see [armIdleGate]. */
+    private val onWake: () -> Unit = {},
 ) {
     companion object {
         private const val TAG = "PacketRouter"
@@ -28,6 +30,27 @@ class PacketRouter(
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val outStream = FileOutputStream(tunFd.fileDescriptor)
+
+    /**
+     * Bytes apps have sent into the tunnel. A counter, not a timestamp: a phone in
+     * a pocket is never actually silent — background sync alone moves kilobytes
+     * every half minute — so what separates use from chatter is volume.
+     */
+    @Volatile var outboundBytes: Long = 0L
+        private set
+
+    /** The [outboundBytes] reading that fires [onWake], or -1 when disarmed. */
+    @Volatile private var wakeAtBytes = -1L
+
+    /**
+     * Arm the wake edge: once [threshold] more bytes have gone out, call [onWake]
+     * — which is how a tunnel left to sleep learns that somebody wants it again,
+     * without a timer running in the meantime. The threshold is what keeps a
+     * keepalive from counting as somebody.
+     */
+    fun armIdleGate(threshold: Long) {
+        wakeAtBytes = outboundBytes + threshold
+    }
 
     fun start() {
         scope.launch { readLoop() }
@@ -66,6 +89,12 @@ class PacketRouter(
     }
 
     private fun dispatch(packet: ByteArray) {
+        outboundBytes += packet.size
+        val wakeAt = wakeAtBytes
+        if (wakeAt >= 0 && outboundBytes >= wakeAt) {
+            wakeAtBytes = -1L
+            onWake()
+        }
         if (dnsProxy != null && packet.isProxyDnsQuery()) {
             dnsProxy.handleQuery(packet)
             return
