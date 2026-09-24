@@ -1,6 +1,12 @@
 package net.holowbark.ui
 
+import androidx.compose.animation.EnterExitState
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.navigation.NavBackStackEntry
+import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -31,14 +37,14 @@ fun AppNavHost(vm: TunnelViewModel, onRequestVpnPermission: () -> Unit) {
     val nav = rememberNavController()
 
     NavHost(navController = nav, startDestination = Routes.CONNECT) {
-        composable(Routes.CONNECT) {
+        screen(Routes.CONNECT) {
             ConnectScreen(
                 vm = vm,
                 onRequestVpnPermission = onRequestVpnPermission,
                 onOpenSettings = { nav.navigate(Routes.SETTINGS) },
             )
         }
-        composable(Routes.SETTINGS) {
+        screen(Routes.SETTINGS) {
             SettingsScreen(
                 vm = vm,
                 onBack = { nav.popBackStack() },
@@ -49,35 +55,48 @@ fun AppNavHost(vm: TunnelViewModel, onRequestVpnPermission: () -> Unit) {
                 onOpenLogs = { nav.navigate(Routes.LOGS) },
             )
         }
-        composable(Routes.SERVER) {
+        screen(Routes.SERVER) {
             ImportScreen(vm = vm, onImported = { nav.popBackStack() })
         }
-        composable(Routes.SELECTED) {
+        screen(Routes.SELECTED) {
             SelectedPeersScreen(
                 vm = vm,
                 onBrowsePublic = { nav.navigate(Routes.COUNTRIES) },
                 onBack = { nav.popBackStack() },
             )
         }
-        composable(Routes.COUNTRIES) {
+        screen(Routes.COUNTRIES) {
             CountryBrowserScreen(
                 vm = vm,
                 onCountrySelected = { key -> nav.navigate(Routes.peers(key)) },
                 onBack = { nav.popBackStack() },
             )
         }
-        composable(Routes.PEERS) { backStack ->
+        screen(Routes.PEERS) { backStack ->
             val key = URLDecoder.decode(backStack.arguments?.getString("countryKey") ?: "", "UTF-8")
             PeerListScreen(vm = vm, countryKey = key, onBack = { nav.popBackStack() })
         }
-        composable(Routes.SPLIT) {
+        screen(Routes.SPLIT) {
             SplitTunnelScreen(vm = vm, onBack = { nav.popBackStack() })
         }
-        composable(Routes.NETWORK) {
+        screen(Routes.NETWORK) {
             YggNetworkScreen(vm = vm, onBack = { nav.popBackStack() })
         }
-        composable(Routes.LOGS) {
+        screen(Routes.LOGS) {
             LogsScreen(onBack = { nav.popBackStack() })
         }
     }
 }
+
+// The leaving screen stays composed through the fade; without this a tap lands on it.
+private fun NavGraphBuilder.screen(route: String, content: @Composable (NavBackStackEntry) -> Unit) =
+    composable(route) { entry ->
+        Box {
+            content(entry)
+            if (transition.targetState == EnterExitState.PostExit) {
+                Box(Modifier.matchParentSize().pointerInput(Unit) {
+                    awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } }
+                })
+            }
+        }
+    }
