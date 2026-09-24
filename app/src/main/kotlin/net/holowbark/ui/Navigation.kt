@@ -22,7 +22,6 @@ private object Routes {
     const val COUNTRIES = "countries"
     const val PEERS     = "peers/{countryKey}"
     const val SPLIT     = "split"
-    const val NETWORK   = "network"
     const val LOGS      = "logs"
     fun peers(key: String) = "peers/${URLEncoder.encode(key, "UTF-8")}"
 }
@@ -51,7 +50,6 @@ fun AppNavHost(vm: TunnelViewModel, onRequestVpnPermission: () -> Unit) {
                 onOpenServer = { nav.navigate(Routes.SERVER) },
                 onOpenPeers = { nav.navigate(Routes.SELECTED) },
                 onOpenSplit = { nav.navigate(Routes.SPLIT) },
-                onOpenNetwork = { nav.navigate(Routes.NETWORK) },
                 onOpenLogs = { nav.navigate(Routes.LOGS) },
             )
         }
@@ -78,9 +76,6 @@ fun AppNavHost(vm: TunnelViewModel, onRequestVpnPermission: () -> Unit) {
         }
         screen(Routes.SPLIT) {
             SplitTunnelScreen(vm = vm, onBack = { nav.popBackStack() })
-        }
-        screen(Routes.NETWORK) {
-            YggNetworkScreen(vm = vm, onBack = { nav.popBackStack() })
         }
         screen(Routes.LOGS) {
             LogsScreen(onBack = { nav.popBackStack() })

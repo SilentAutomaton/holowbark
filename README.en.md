@@ -328,9 +328,9 @@ confirm the WireGuard port is open to `200::/7` rather than closed to everything
 
 **Connected, but nothing loads.** Usually DNS. If the config's `DNS` server is only
 reachable through the tunnel it may not answer; try `1.1.1.1`. If overlay DNS is on,
-turn it off on the Network tab to narrow the problem down.
+turn it off in Settings to narrow the problem down.
 
-**`.ygg` names do not resolve.** Enable Yggdrasil DNS on the Network tab. It is off
+**`.ygg` names do not resolve.** Enable Yggdrasil DNS in Settings. It is off
 by default because it sends every lookup through the overlay resolvers.
 
 **Small pages load, large downloads stall.** An MTU mismatch: one end is emitting

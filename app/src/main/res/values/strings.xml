@@ -22,6 +22,7 @@
 
     <string name="back">Back</string>
     <string name="cancel">Cancel</string>
+    <string name="next_connect">Changes apply the next time you connect.</string>
 
     <string name="split_title">Split tunneling</string>
     <string name="split_nothing_bypasses">Everything goes through the tunnel</string>
@@ -51,7 +52,6 @@
     <string name="split_apps_none_inside">No apps picked yet, so every app still goes through the tunnel. Pick the ones that need it.</string>
     <string name="split_apps_search">Search apps</string>
     <string name="split_apps_no_match">No app matches “%1$s”.</string>
-    <string name="split_next_connect">Changes apply the next time you connect.</string>
 
     <string name="oled_title">OLED black</string>
     <string name="oled_subtitle">Pure black background. An OLED screen keeps those pixels off, and what sits on top keeps its contrast.</string>
@@ -63,5 +63,30 @@
     <string name="net_probing">Looking…</string>
     <string name="net_probe_found">In the mesh</string>
     <string name="net_probe_missing">Not answering</string>
+    <string name="net_checks_header">Checks</string>
+    <string name="net_ping">Ping</string>
+    <string name="net_pinging">Pinging…</string>
+    <string name="net_ping_ms">%1$d ms</string>
+    <string name="net_ping_timeout">No reply</string>
+    <string name="net_checks_offline">Connect first. Both checks go through the mesh.</string>
     <string name="net_probe_caption">Asks the server to identify itself over the overlay. It answers without a tunnel, so a reply here with a failing ping means the tunnel is what is broken.</string>
+
+    <string name="dns_title">Yggdrasil DNS</string>
+    <string name="dns_subtitle">.ygg names resolve through the mesh. All other names go to your server\'s DNS.</string>
+
+    <string name="peers_country_empty">No public peers in this country.</string>
+    <string name="peers_selected_header">Your peers</string>
+    <string name="peers_other_header">Also connected</string>
+    <string name="peer_up">Up</string>
+    <string name="peer_down">Down</string>
+    <string name="peer_waiting">Not dialed yet</string>
+    <string name="peer_inbound">Inbound</string>
+    <string name="peer_discovered">Found on this network</string>
+    <string name="peer_latency">%1$s ms</string>
+    <string name="peer_uptime">up %1$s</string>
+    <string name="discovery_header">Local discovery</string>
+    <string name="discovery_title">Find my devices nearby</string>
+    <string name="discovery_subtitle">Finds your own devices on this Wi-Fi, with no internet. Every device needs the same passphrase.</string>
+    <string name="discovery_passphrase">Passphrase</string>
+    <string name="discovery_passphrase_needed">Set a passphrase to switch discovery on.</string>
 </resources>

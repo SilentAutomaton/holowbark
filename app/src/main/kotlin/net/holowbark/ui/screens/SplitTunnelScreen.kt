@@ -28,7 +28,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import net.holowbark.R
+import net.holowbark.ui.Hint
 import net.holowbark.ui.InstalledApp
+import net.holowbark.ui.SectionHeader
 import net.holowbark.ui.TunnelViewModel
 import net.holowbark.ui.contentWidth
 import net.holowbark.vpn.VpnState
@@ -92,7 +94,7 @@ fun SplitTunnelScreen(vm: TunnelViewModel, onBack: () -> Unit) {
             tunnelState.overall != VpnState.IDLE
 
         val subnetSection: LazyListScope.() -> Unit = {
-            if (showHint) item { Hint(stringResource(R.string.split_next_connect)) }
+            if (showHint) item { Hint(stringResource(R.string.next_connect)) }
             item {
                 SectionHeader(
                     title = stringResource(R.string.split_subnets_header),
@@ -310,30 +312,4 @@ private fun AppRow(app: InstalledApp, checked: Boolean, onToggle: () -> Unit) {
         Spacer(Modifier.width(12.dp))
         Checkbox(checked = checked, onCheckedChange = null)
     }
-}
-
-@Composable
-private fun SectionHeader(title: String, action: @Composable (() -> Unit)? = null) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.weight(1f),
-        )
-        action?.invoke()
-    }
-}
-
-@Composable
-private fun Hint(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.outline,
-        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
-    )
 }

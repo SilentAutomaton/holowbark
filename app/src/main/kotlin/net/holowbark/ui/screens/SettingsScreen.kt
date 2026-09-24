@@ -17,6 +17,7 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import net.holowbark.R
+import net.holowbark.ui.SwitchRow
 import net.holowbark.ui.TunnelViewModel
 import net.holowbark.ui.contentWidth
 
@@ -32,12 +33,12 @@ fun SettingsScreen(
     onOpenServer: () -> Unit,
     onOpenPeers: () -> Unit,
     onOpenSplit: () -> Unit,
-    onOpenNetwork: () -> Unit,
     onOpenLogs: () -> Unit,
 ) {
     val awgConfig by vm.awgConfig.collectAsState()
     val selectedPeers by vm.selectedPeers.collectAsState()
     val oled by vm.oledTheme.collectAsState()
+    val yggDns by vm.yggDnsEnabled.collectAsState()
     val bypassedApps by vm.bypassedApps.collectAsState()
     val bypassedSubnets by vm.bypassedSubnets.collectAsState()
     val appsAllowList by vm.appsAllowList.collectAsState()
@@ -77,16 +78,17 @@ fun SettingsScreen(
                 subtitle = bypassSummary(bypassedApps.size, bypassedSubnets.size, appsAllowList),
                 onClick = onOpenSplit,
             )
-            SettingsRow(
-                icon = Icons.Default.Lan,
-                title = "Network",
-                subtitle = "Address, live peers, DNS, discovery",
-                onClick = onOpenNetwork,
-            )
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
-            SettingsSwitch(
+            SwitchRow(
+                icon = Icons.Default.Dns,
+                title = stringResource(R.string.dns_title),
+                subtitle = stringResource(R.string.dns_subtitle),
+                checked = yggDns,
+                onToggle = vm::toggleYggDns,
+            )
+            SwitchRow(
                 icon = Icons.Default.Contrast,
                 title = stringResource(R.string.oled_title),
                 subtitle = stringResource(R.string.oled_subtitle),
@@ -176,33 +178,5 @@ private fun SettingsRow(
                 color = MaterialTheme.colorScheme.outline,
             )
         }
-    }
-}
-
-@Composable
-private fun SettingsSwitch(
-    icon: ImageVector,
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onToggle: () -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle)
-            .padding(horizontal = 20.dp, vertical = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
-        Spacer(Modifier.width(20.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Switch(checked = checked, onCheckedChange = { onToggle() })
     }
 }

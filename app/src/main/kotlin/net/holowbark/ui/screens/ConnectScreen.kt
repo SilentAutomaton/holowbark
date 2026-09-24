@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -200,6 +201,13 @@ private fun TunnelStatusText(labels: StatusLabels) {
         color = labels.color(),
     )
     Spacer(Modifier.height(6.dp))
+    // Long press selects the address for copying; nothing else here is worth it.
+    if (labels.detailIsAddress) SelectionContainer { TunnelDetailText(labels) }
+    else TunnelDetailText(labels)
+}
+
+@Composable
+private fun TunnelDetailText(labels: StatusLabels) {
     Text(
         text = labels.detail,
         style = MaterialTheme.typography.bodySmall,
