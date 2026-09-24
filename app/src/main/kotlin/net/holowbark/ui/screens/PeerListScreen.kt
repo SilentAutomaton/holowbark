@@ -12,8 +12,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import net.holowbark.R
 import net.holowbark.peers.models.Peer
 import net.holowbark.ui.TunnelViewModel
 import net.holowbark.ui.contentWidth
@@ -27,12 +29,12 @@ fun PeerListScreen(
     countryKey: String,
     onBack: () -> Unit,
 ) {
-    val peers         by vm.currentCountryPeers.collectAsState()
-    val selectedPeers by vm.selectedPeers.collectAsState()
-
-    LaunchedEffect(countryKey) {
-        vm.loadPeersForCountry(countryKey)
+    // Local and keyed by country, so a list read for another country never shows here.
+    val loaded by produceState<List<Peer>?>(null, countryKey) {
+        value = vm.repo.getPeersForCountry(countryKey)
     }
+    val peers = loaded.orEmpty()
+    val selectedPeers by vm.selectedPeers.collectAsState()
 
     val countryLabel = countryDisplayName(countryKey)
 
@@ -76,9 +78,16 @@ fun PeerListScreen(
             }
         }
     ) { padding ->
-        if (peers.isEmpty()) {
+        if (loaded == null) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
+            }
+        } else if (peers.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(padding).padding(24.dp)) {
+                Text(
+                    stringResource(R.string.peers_country_empty),
+                    color = MaterialTheme.colorScheme.outline,
+                )
             }
         } else {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {

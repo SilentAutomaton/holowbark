@@ -21,7 +21,6 @@ import net.holowbark.config.toConfString
 import net.holowbark.peers.PeerDatabase
 import net.holowbark.peers.PeerRepository
 import net.holowbark.peers.models.CountryInfo
-import net.holowbark.peers.models.Peer
 import net.holowbark.vpn.TunnelStatus
 import net.holowbark.vpn.VpnState
 import net.holowbark.vpn.YggNetworkState
@@ -64,9 +63,6 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _countries = MutableStateFlow<List<CountryInfo>>(emptyList())
     val countries: StateFlow<List<CountryInfo>> = _countries.asStateFlow()
-
-    private val _currentCountryPeers = MutableStateFlow<List<Peer>>(emptyList())
-    val currentCountryPeers: StateFlow<List<Peer>> = _currentCountryPeers.asStateFlow()
 
     private val _selectedPeers = MutableStateFlow<Set<String>>(emptySet())
     val selectedPeers: StateFlow<Set<String>> = _selectedPeers.asStateFlow()
@@ -187,12 +183,6 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 _isLoadingPeers.value = false
             }
-        }
-    }
-
-    fun loadPeersForCountry(countryKey: String) {
-        viewModelScope.launch {
-            _currentCountryPeers.value = repo.getPeersForCountry(countryKey)
         }
     }
 
