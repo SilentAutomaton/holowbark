@@ -8,17 +8,18 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.lifecycle.viewmodel.compose.viewModel
 import net.holowbark.ui.AppNavHost
 import net.holowbark.ui.HolowbarkTheme
 import net.holowbark.ui.TunnelViewModel
 
 class MainActivity : ComponentActivity() {
-    private lateinit var vm: TunnelViewModel
+    // Not set from setContent: an activity result can arrive before the first composition.
+    private val vm: TunnelViewModel by viewModels()
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -34,7 +35,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestNotificationPermissionIfNeeded()
         setContent {
-            vm = viewModel()
             val oled by vm.oledTheme.collectAsState()
             HolowbarkTheme(oled = oled) {
                 AppNavHost(vm = vm, onRequestVpnPermission = ::requestVpnPermission)
