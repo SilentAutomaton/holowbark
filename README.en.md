@@ -61,10 +61,13 @@ so the transport that carries the tunnel does not run through it.
 1. Press **Add server** and import your WireGuard `.conf` file. If you do not have
    a server yet, set one up with the instructions below.
 2. On the first run the app already picked the public peers of the country your
-   phone is in: the ones the public list reports up, or all of them when the list
-   cannot be fetched. To change them, open **Settings → Peers** and either browse
-   the public list — **Add all** and **Remove all** take a whole country at once —
-   or type in a peer of your own: your Yggdrasil node, or one on your LAN.
+   phone is in (from the mobile network, then the SIM, then the region in the
+   system settings): the ones the public list reports up. When the list cannot be
+   updated, it takes every peer of that country from the saved copy: the last one
+   downloaded, or the list built into the app when there is none yet. To change
+   them, open **Settings → Peers** and either browse the public list — **Add all**
+   and **Remove all** take a whole country at once — or type in a peer of your
+   own: your Yggdrasil node, or one on your LAN.
 3. Go back and press **Connect**.
 
 The public list reports peers as its crawler sees them, from its own network. The
