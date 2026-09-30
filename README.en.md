@@ -49,9 +49,6 @@ so the transport that carries the tunnel does not run through it.
 
 ## Status and limitations
 
-- **Always-On VPN is not supported.** Turn it off:
-  Settings → Network → VPN → Holowbark → ⚙. The app cannot establish the overlay
-  when Android holds the tunnel open before it starts.
 - **AmneziaWG obfuscation parameters are parsed and passed through, but untested.**
   Plain WireGuard configs are the tested path.
 - Android 8.0 (API 26) and later. Below API 33 the peer exclusions are expressed as
