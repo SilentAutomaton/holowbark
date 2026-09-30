@@ -72,8 +72,8 @@ so the transport that carries the tunnel does not run through it.
 
 The public list reports peers as its crawler sees them, from its own network. The
 button next to **Add all** checks every peer of a country from the phone itself;
-then **Add all** takes the peers that answered here. The check runs only while the
-tunnel is down, because with the tunnel up it would go through the tunnel.
+then **Add all** takes the peers that answered here. The check runs only while you
+are disconnected; otherwise it would time the tunnel, not the path from the phone.
 
 **Settings → Server** keeps every `.conf` you import, under its file name. Pick
 another server there; the switch takes effect at the next connect. Any server can
@@ -325,14 +325,14 @@ Conventions for contributing are in [CODESTYLE.md](CODESTYLE.md).
 
 ## Troubleshooting
 
-The **Logs** tab is the first place to look for all of these. It holds the last 500
-lines and copies to the clipboard.
+**Settings → Logs** is the first place to look for all of these. It holds the last
+500 lines and copies them to the clipboard.
 
 **Yggdrasil never leaves "Connecting".** No peer is answering. Add more peers on the
 Peers screen, and prefer ones geographically close to you. Public peers go down
 regularly, so a list that worked last month may be entirely dead.
 
-**Yggdrasil is up but the tunnel layer stays "Pinging server…".** The overlay works
+**Yggdrasil is up but the tunnel layer stays "Reaching server…".** The overlay works
 and your server is not answering on it. Check `systemctl status yggdrasil` on the
 server, confirm `yggdrasilctl getSelf` reports the address in your `Endpoint`, and
 confirm the WireGuard port is open to `200::/7` rather than closed to everything.
