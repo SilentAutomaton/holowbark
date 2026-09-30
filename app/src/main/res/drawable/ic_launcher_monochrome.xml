@@ -1,11 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Kept inside the 66dp safe zone: the system masks everything beyond it. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:fillColor="#A8BFA0"
+        android:fillColor="#FFFFFFFF"
         android:pathData="M40.1,72.0 C55.46,73.9 75.79,50.67 79.7,32.4 C59.98,30.9 38.33,49.64 40.1,72.0 Z M41.24,67.6 C48.16,54.32 60.17,42.57 70.51,36.67 C61.36,43.76 50.14,56.3 42.23,68.59 Z M40.26,68.2 C37.33,72.39 33.37,73.58 29.21,73.38 C28.02,73.38 28.02,75.36 29.41,75.56 C34.36,76.16 38.91,74.77 42.24,70.18 Z"/>
 </vector>

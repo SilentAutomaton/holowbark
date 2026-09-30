@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#0D1A0D</color>
     <!-- The window while the app starts, so the launch does not flash grey. -->
     <color name="bark">#0B0E13</color>
 </resources>
