@@ -16,8 +16,8 @@ Pre-built APKs are in [Releases](https://github.com/SilentAutomaton/holowbark/re
 <p align="center">
   <img src="docs/screenshots/connect.png" width="24%" alt="The connect screen: a ring showing peers and the tunnel">
   <img src="docs/screenshots/settings.png" width="24%" alt="Settings">
-  <img src="docs/screenshots/peers.png" width="24%" alt="The peer list, with a field for adding your own">
-  <img src="docs/screenshots/network.png" width="24%" alt="Network diagnostics: address, ping, the server's key, DNS">
+  <img src="docs/screenshots/peers.png" width="24%" alt="Public peers of one country, checked from the phone, with Add all">
+  <img src="docs/screenshots/server.png" width="24%" alt="Saved servers, the current config, the server's key and checks">
 </p>
 
 ## How a packet travels
@@ -58,12 +58,23 @@ so the transport that carries the tunnel does not run through it.
 
 ## Quick start
 
-1. Open **Settings → Server** and import your WireGuard `.conf` file. If you do not
-   have a server yet, set one up with the instructions below.
-2. Open **Settings → Peers**. Either browse the public list and pick a country close
-   to you, or type in a peer of your own — your Yggdrasil node, or one on your LAN.
-   Ten or more public peers makes for a resilient overlay.
+1. Press **Add server** and import your WireGuard `.conf` file. If you do not have
+   a server yet, set one up with the instructions below.
+2. On the first run the app already picked the public peers of the country your
+   phone is in: the ones the public list reports up, or all of them when the list
+   cannot be fetched. To change them, open **Settings → Peers** and either browse
+   the public list — **Add all** and **Remove all** take a whole country at once —
+   or type in a peer of your own: your Yggdrasil node, or one on your LAN.
 3. Go back and press **Connect**.
+
+The public list reports peers as its crawler sees them, from its own network. The
+button next to **Add all** checks every peer of a country from the phone itself;
+then **Add all** takes the peers that answered here. The check runs only while the
+tunnel is down, because with the tunnel up it would go through the tunnel.
+
+**Settings → Server** keeps every `.conf` you import, under its file name. Pick
+another server there; the switch takes effect at the next connect. Any server can
+be renamed, and deleted unless the tunnel is running on it.
 
 The ring around the button is the tunnel. Each segment of the outer ring is one
 connected Yggdrasil peer, so you can watch the overlay assemble; the inner ring is
