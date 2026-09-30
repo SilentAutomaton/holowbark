@@ -41,6 +41,7 @@ fun AppNavHost(vm: TunnelViewModel, onRequestVpnPermission: () -> Unit) {
                 vm = vm,
                 onRequestVpnPermission = onRequestVpnPermission,
                 onOpenSettings = { nav.navigate(Routes.SETTINGS) },
+                onAddServer = { nav.navigate(Routes.SERVER) },
             )
         }
         screen(Routes.SETTINGS) {

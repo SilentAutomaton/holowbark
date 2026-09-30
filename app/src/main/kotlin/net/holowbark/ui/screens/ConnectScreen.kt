@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -23,6 +24,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import net.holowbark.R
 import net.holowbark.ui.CONTENT_MAX_WIDTH
 import net.holowbark.ui.TunnelViewModel
 import kotlinx.coroutines.delay
@@ -43,6 +45,7 @@ fun ConnectScreen(
     vm: TunnelViewModel,
     onRequestVpnPermission: () -> Unit,
     onOpenSettings: () -> Unit,
+    onAddServer: () -> Unit,
 ) {
     val status by vm.tunnelStatus.collectAsState()
     val awgConfig by vm.awgConfig.collectAsState()
@@ -93,10 +96,10 @@ fun ConnectScreen(
             RingAndButton(
                 status = status,
                 labels = labels,
-                enabled = hasConfig,
                 diameter = diameter,
                 onClick = {
-                    if (status.overall.isStoppable()) vm.disconnect()
+                    if (!hasConfig) onAddServer()
+                    else if (status.overall.isStoppable()) vm.disconnect()
                     else onRequestVpnPermission()
                 },
             )
@@ -170,7 +173,6 @@ private const val BUTTON_SHARE = 0.68f
 private fun RingAndButton(
     status: TunnelStatus,
     labels: StatusLabels,
-    enabled: Boolean,
     diameter: Dp,
     onClick: () -> Unit,
 ) {
@@ -183,7 +185,6 @@ private fun RingAndButton(
         )
         ConnectButton(
             label = labels.action,
-            enabled = enabled,
             // The ring is decoration to a screen reader; the button carries
             // the whole state as a sentence.
             description = "${labels.action}. ${labels.state}. ${labels.detail}",
@@ -245,7 +246,6 @@ private fun RestartTunnelButton(awgState: LayerState, onClick: () -> Unit, visib
 @Composable
 private fun ConnectButton(
     label: String,
-    enabled: Boolean,
     description: String,
     diameter: Dp,
     onClick: () -> Unit,
@@ -257,10 +257,9 @@ private fun ConnectButton(
     val edge = MaterialTheme.colorScheme.outline
     Surface(
         onClick = onClick,
-        enabled = enabled,
         shape = CircleShape,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(2.dp, if (enabled) edge else edge.copy(alpha = 0.4f)),
+        border = BorderStroke(2.dp, edge),
         modifier = Modifier.size(diameter).semantics { contentDescription = description },
     ) {
         Box(contentAlignment = Alignment.Center) {
@@ -279,8 +278,7 @@ private fun ConnectButton(
                 // rather than spilling out of the circle.
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(horizontal = 8.dp),
-                color = if (enabled) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.outline,
+                color = MaterialTheme.colorScheme.onSurface,
             )
         }
     }
@@ -329,7 +327,11 @@ private fun statusLabels(
     stallDetail: String?,
 ): StatusLabels {
     if (!hasConfig) {
-        return StatusLabels("Connect", "No server", "Import a config in Settings to begin")
+        return StatusLabels(
+            action = stringResource(R.string.connect_add_server),
+            state = stringResource(R.string.connect_no_server),
+            detail = stringResource(R.string.connect_no_server_detail),
+        )
     }
     return when (status.overall) {
         VpnState.CONNECTED -> StatusLabels(

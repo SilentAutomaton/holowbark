@@ -24,6 +24,10 @@
     <string name="cancel">Cancel</string>
     <string name="next_connect">Changes apply the next time you connect.</string>
 
+    <string name="connect_add_server">Add server</string>
+    <string name="connect_no_server">No server</string>
+    <string name="connect_no_server_detail">Add a .conf file from your server to connect</string>
+
     <string name="split_title">Split tunneling</string>
     <string name="split_nothing_bypasses">Everything goes through the tunnel</string>
     <string name="split_summary">%1$s and %2$s bypass the tunnel</string>
@@ -89,4 +93,30 @@
     <string name="discovery_subtitle">Finds your own devices on this Wi-Fi, with no internet. Every device needs the same passphrase.</string>
     <string name="discovery_passphrase">Passphrase</string>
     <string name="discovery_passphrase_needed">Set a passphrase to switch discovery on.</string>
+    <string name="peers_add_all">Add all</string>
+    <string name="peers_remove_all">Remove all</string>
+    <string name="peers_check">Check from this device</string>
+    <string name="peers_checking">Checking peers from this device</string>
+    <string name="peers_check_disconnect">Disconnect to check peers from this device. While the tunnel is up, the check would go through it.</string>
+    <string name="peers_country_status">%1$d up of %2$d</string>
+    <plurals name="peers_country_unmeasured">
+        <item quantity="one">%d peer, status unknown</item>
+        <item quantity="other">%d peers, status unknown</item>
+    </plurals>
+    <string name="peers_unmeasured_hint">We could not refresh the public list, so these peers come from a saved copy with no status. Check them from this device to see which answer.</string>
+    <string name="peer_probe_ms">%1$d ms from this device</string>
+    <string name="peer_probe_none">No answer from this device</string>
+
+    <string name="server_add_conf">Add .conf file</string>
+    <string name="server_saved_header">Saved servers</string>
+    <string name="server_rename">Rename %1$s</string>
+    <string name="server_delete">Delete %1$s</string>
+    <string name="server_rename_title">Rename server</string>
+    <string name="server_rename_label">Name</string>
+    <string name="server_rename_confirm">Rename</string>
+    <string name="server_rename_taken">This name is empty or already in use. Enter another name.</string>
+    <string name="server_delete_title">Delete %1$s?</string>
+    <string name="server_delete_text">The app forgets this config. To use the server again, add its .conf file again.</string>
+    <string name="server_delete_confirm">Delete server</string>
+    <string name="server_in_use_hint">To delete the server the tunnel is running on, disconnect first.</string>
 </resources>

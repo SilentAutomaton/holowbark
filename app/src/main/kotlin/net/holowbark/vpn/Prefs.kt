@@ -2,6 +2,9 @@ package net.holowbark.vpn
 
 import android.content.Context
 import android.content.SharedPreferences
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import net.holowbark.AppLogger
 
 /**
  * The app's single SharedPreferences file. Every key is spelled here and nowhere
@@ -13,6 +16,7 @@ import android.content.SharedPreferences
  */
 class Prefs(private val prefs: SharedPreferences) {
     companion object {
+        private const val TAG = "Prefs"
         private const val FILE = "holowbark"
 
         // Written by TunnelService, read by the UI and the Quick Settings tile.
@@ -35,6 +39,10 @@ class Prefs(private val prefs: SharedPreferences) {
         private const val BYPASS_SUBNETS   = "bypass_subnets"
         private const val AWG_CONF_RAW     = "awg_conf_raw"
         private const val SELECTED_PEERS   = "selected_peers"
+        private const val PEERS_SEEDED     = "peers_seeded"
+        private const val AWG_CONFS        = "awg_confs"
+        private const val AWG_CONF_NAME    = "awg_conf_name"
+        private const val AWG_CONF_IN_USE  = "awg_conf_in_use"
 
         fun of(context: Context): Prefs =
             Prefs(context.getSharedPreferences(FILE, Context.MODE_PRIVATE))
@@ -74,6 +82,39 @@ class Prefs(private val prefs: SharedPreferences) {
     var awgConfRaw: String?
         get() = prefs.getString(AWG_CONF_RAW, null)
         set(v) = prefs.edit().putString(AWG_CONF_RAW, v).apply()
+
+    /**
+     * Every imported config by the name the user sees, as the raw .conf text.
+     * [awgConf] and [awgConfRaw] stay the active pair, so the service and the tile
+     * never read this map.
+     */
+    var awgConfs: Map<String, String>
+        get() = prefs.getString(AWG_CONFS, null)
+            ?.let { text ->
+                runCatching { Json.decodeFromString<Map<String, String>>(text) }
+                    .onFailure { AppLogger.w(TAG, "Saved configs unreadable: $it") }
+                    .getOrNull()
+            }
+            ?: emptyMap()
+        set(v) = prefs.edit().putString(AWG_CONFS, Json.encodeToString(v)).apply()
+
+    var awgConfName: String?
+        get() = prefs.getString(AWG_CONF_NAME, null)
+        set(v) = prefs.edit().putString(AWG_CONF_NAME, v).apply()
+
+    /**
+     * The name of the config the tunnel was last started with, written by
+     * [TunnelService]. It differs from [awgConfName] after a switch while
+     * connected, and only means something while the service runs.
+     */
+    var awgConfInUse: String?
+        get() = prefs.getString(AWG_CONF_IN_USE, null)
+        set(v) = prefs.edit().putString(AWG_CONF_IN_USE, v).apply()
+
+    /** Set once the first run has tried to pick peers from the user's country. */
+    var peersSeeded: Boolean
+        get() = prefs.getBoolean(PEERS_SEEDED, false)
+        set(v) = prefs.edit().putBoolean(PEERS_SEEDED, v).apply()
 
     var selectedPeers: Set<String>
         get() = prefs.getStringSet(SELECTED_PEERS, null) ?: emptySet()

@@ -14,7 +14,8 @@ interface PeerDao {
     @Query("""
         SELECT country,
                COUNT(*) AS totalPeers,
-               SUM(CASE WHEN up = 1 THEN 1 ELSE 0 END) AS upPeers
+               CASE WHEN COUNT(up) = 0 THEN NULL
+                    ELSE SUM(CASE WHEN up = 1 THEN 1 ELSE 0 END) END AS upPeers
         FROM peers
         GROUP BY country
         ORDER BY country ASC
@@ -23,6 +24,13 @@ interface PeerDao {
 
     @Query("DELETE FROM peers")
     suspend fun deleteAll()
+
+    // One transaction, so a reader never catches the table empty between the two.
+    @Transaction
+    suspend fun replaceAll(peers: List<Peer>) {
+        deleteAll()
+        insertAll(peers)
+    }
 
     /** Return the most recent cachedAt timestamp, or null if the table is empty. */
     @Query("SELECT MAX(cachedAt) FROM peers")
@@ -33,10 +41,10 @@ interface PeerDao {
 data class CountrySummaryRow(
     val country: String,
     val totalPeers: Int,
-    val upPeers: Int,
+    val upPeers: Int?,
 )
 
-@Database(entities = [Peer::class], version = 2, exportSchema = false)
+@Database(entities = [Peer::class], version = 3, exportSchema = false)
 abstract class PeerDatabase : RoomDatabase() {
     abstract fun peerDao(): PeerDao
 

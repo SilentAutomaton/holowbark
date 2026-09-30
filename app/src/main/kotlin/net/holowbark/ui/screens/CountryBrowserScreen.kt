@@ -94,13 +94,15 @@ private fun CountryRow(info: CountryInfo, onClick: () -> Unit) {
     ) {
         Text(info.displayName, style = MaterialTheme.typography.bodyLarge)
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            info.upPeers?.let {
+                Text(
+                    "$it↑ /",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             Text(
-                "${info.upPeers}↑",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Text(
-                "/ ${info.totalPeers}",
+                "${info.totalPeers}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline,
             )

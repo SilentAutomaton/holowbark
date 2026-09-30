@@ -4,11 +4,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,11 +23,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import net.holowbark.R
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import net.holowbark.config.AwgConfigParseException
 import net.holowbark.config.parseAwgConf
 import net.holowbark.config.toConfString
@@ -70,7 +84,7 @@ fun ImportScreen(
         } catch (e: Exception) {
             errorText = "Parse error: ${e.message}"; return@rememberLauncherForActivityResult
         }
-        vm.saveAwgConfig(config, text)
+        vm.saveAwgConfig(config, text, confName(context, uri) ?: config.endpoint)
         onImported()
     }
 
@@ -87,6 +101,7 @@ fun ImportScreen(
         topBar = { TopAppBar(title = { Text("Server") }) }
     ) { padding ->
         BoxWithConstraints(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
+            val landscape = maxWidth > maxHeight
             val config: @Composable ColumnScope.() -> Unit = {
                 Button(
                     onClick = { picker.launch(arrayOf("*/*")) },
@@ -94,8 +109,11 @@ fun ImportScreen(
                 ) {
                     Icon(Icons.Default.FileOpen, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text(if (awgConfig != null) "Replace .conf file" else "Open .conf file")
+                    Text(stringResource(R.string.server_add_conf))
                 }
+                // Lying down there is no height to share with the config, which the
+                // list would squeeze to nothing, so it moves to the second column.
+                if (!landscape) SavedServers(vm)
 
                 if (awgConfig == null) {
                     Text(
@@ -111,7 +129,7 @@ fun ImportScreen(
             }
             val columnModifier = Modifier.fillMaxHeight().padding(horizontal = 12.dp, vertical = 8.dp)
 
-            if (maxWidth > maxHeight) {
+            if (landscape) {
                 // Lying down, the checks get a column of their own instead of pressing
                 // the config into a strip a few lines high.
                 Row(Modifier.fillMaxSize()) {
@@ -122,6 +140,7 @@ fun ImportScreen(
                     )
                     if (awgConfig != null) {
                         Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())) {
+                            SavedServers(vm)
                             ServerChecks(vm)
                         }
                     }
@@ -137,6 +156,146 @@ fun ImportScreen(
             }
         }
     }
+}
+
+/** The picked file's name without `.conf`, which is how the user already knows it. */
+private fun confName(context: Context, uri: Uri): String? =
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        ?.use { if (it.moveToFirst()) it.getString(0) else null }
+        ?.removeSuffix(".conf")
+        ?.takeIf { it.isNotBlank() }
+
+/**
+ * Every imported config, one selected. Only the config the tunnel is running
+ * on has no delete button — see [TunnelViewModel.deleteAwgConf].
+ */
+@Composable
+private fun SavedServers(vm: TunnelViewModel) {
+    val confs by vm.awgConfs.collectAsState()
+    val active by vm.awgConfName.collectAsState()
+    val inUse by vm.awgConfInUse.collectAsState()
+    var renaming by rememberSaveable { mutableStateOf<String?>(null) }
+    var deleting by rememberSaveable { mutableStateOf<String?>(null) }
+    var switched by rememberSaveable { mutableStateOf(false) }
+    if (confs.isEmpty()) return
+
+    renaming?.let { name -> RenameDialog(name, vm::renameAwgConf, onDone = { renaming = null }) }
+    deleting?.let { name ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text(stringResource(R.string.server_delete_title, name)) },
+            text = { Text(stringResource(R.string.server_delete_text)) },
+            confirmButton = {
+                TextButton(onClick = { vm.deleteAwgConf(name); deleting = null }) {
+                    Text(stringResource(R.string.server_delete_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleting = null }) { Text(stringResource(R.string.cancel)) }
+            },
+        )
+    }
+
+    Column {
+        SectionHeader(stringResource(R.string.server_saved_header))
+        confs.keys.sorted().forEach { name ->
+            ServerRow(
+                name = name,
+                endpoint = remember(confs[name]) {
+                    confs[name]?.let { runCatching { parseAwgConf(it).endpoint }.getOrNull() }.orEmpty()
+                },
+                selected = name == active,
+                deletable = name != inUse,
+                onSelect = { vm.selectAwgConf(name); switched = true },
+                onRename = { renaming = name },
+                onDelete = { deleting = name },
+            )
+        }
+        if (inUse != null) {
+            Hint(stringResource(if (switched) R.string.next_connect else R.string.server_in_use_hint))
+        }
+    }
+}
+
+@Composable
+private fun ServerRow(
+    name: String,
+    endpoint: String,
+    selected: Boolean,
+    deletable: Boolean,
+    onSelect: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
+            .padding(start = 8.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = null, modifier = Modifier.padding(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                endpoint,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.outline,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onRename) {
+            Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.server_rename, name),
+                tint = MaterialTheme.colorScheme.outline)
+        }
+        if (deletable) {
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.server_delete, name),
+                    tint = MaterialTheme.colorScheme.outline)
+            }
+        } else {
+            Spacer(Modifier.size(48.dp))
+        }
+    }
+}
+
+@Composable
+private fun RenameDialog(name: String, onRename: (String, String) -> Boolean, onDone: () -> Unit) {
+    // Selected from the start, so typing replaces the old name.
+    var text by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(name, TextRange(0, name.length)))
+    }
+    var rejected by rememberSaveable { mutableStateOf(false) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    val submit = { if (onRename(name, text.text)) onDone() else rejected = true }
+    AlertDialog(
+        onDismissRequest = onDone,
+        title = { Text(stringResource(R.string.server_rename_title)) },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it; rejected = false },
+                label = { Text(stringResource(R.string.server_rename_label)) },
+                singleLine = true,
+                modifier = Modifier.focusRequester(focus),
+                // Lying down the keyboard covers the dialog's buttons.
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { submit() }),
+                isError = rejected,
+                supportingText = if (rejected) {
+                    { Text(stringResource(R.string.server_rename_taken)) }
+                } else null,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = submit) { Text(stringResource(R.string.server_rename_confirm)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDone) { Text(stringResource(R.string.cancel)) }
+        },
+    )
 }
 
 @Composable

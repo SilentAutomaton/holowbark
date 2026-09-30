@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -14,13 +15,19 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
+import net.holowbark.AppLogger
 import net.holowbark.config.AwgConfig
 import net.holowbark.config.parseAwgConf
 import net.holowbark.config.toConfString
 import net.holowbark.peers.PeerDatabase
 import net.holowbark.peers.PeerRepository
 import net.holowbark.peers.models.CountryInfo
+import net.holowbark.peers.models.countryKeyForIso
+import net.holowbark.peers.models.peersToSelect
+import net.holowbark.peers.probePeer
 import net.holowbark.vpn.TunnelStatus
 import net.holowbark.vpn.VpnState
 import net.holowbark.vpn.YggNetworkState
@@ -32,8 +39,12 @@ import net.holowbark.vpn.TunnelService
 import net.holowbark.vpn.parseIpv6Bytes
 import net.holowbark.vpn.parseSubnet
 import java.net.Inet6Address
+import java.util.Locale
 
+private const val TAG = "TunnelViewModel"
 private const val RESTART_TEARDOWN_TIMEOUT_MS = 3_000L
+// Enough to check a country in a few seconds without a burst of sockets.
+private const val PROBE_PARALLELISM = 8
 private const val INTERNET_PERMISSION = android.Manifest.permission.INTERNET
 private const val PERMISSION_GRANTED = android.content.pm.PackageManager.PERMISSION_GRANTED
 
@@ -66,6 +77,24 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _selectedPeers = MutableStateFlow<Set<String>>(emptySet())
     val selectedPeers: StateFlow<Set<String>> = _selectedPeers.asStateFlow()
+
+    /** Connect time from this device per peer address, -1 for no answer. */
+    private val _probeResults = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val probeResults: StateFlow<Map<String, Int>> = _probeResults.asStateFlow()
+
+    private val _isProbing = MutableStateFlow(false)
+    val isProbing: StateFlow<Boolean> = _isProbing.asStateFlow()
+
+    /** Every imported config by name, as raw .conf text. */
+    private val _awgConfs = MutableStateFlow(prefs.awgConfs)
+    val awgConfs: StateFlow<Map<String, String>> = _awgConfs.asStateFlow()
+
+    private val _awgConfName = MutableStateFlow(prefs.awgConfName)
+    val awgConfName: StateFlow<String?> = _awgConfName.asStateFlow()
+
+    /** The config the running tunnel was started with, or null while it is down. */
+    private val _awgConfInUse = MutableStateFlow(storedConfInUse())
+    val awgConfInUse: StateFlow<String?> = _awgConfInUse.asStateFlow()
 
     private val _isLoadingPeers = MutableStateFlow(false)
     val isLoadingPeers: StateFlow<Boolean> = _isLoadingPeers.asStateFlow()
@@ -108,6 +137,7 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
         override fun onReceive(context: Context, intent: Intent) {
             val status = TunnelStatus.fromIntent(intent) ?: return
             _tunnelStatus.value = status
+            _awgConfInUse.value = storedConfInUse()
             // The key is learned while connecting, and this is the only signal the
             // UI gets that the tunnel made progress.
             _serverKey.value = storedServerKey()
@@ -132,20 +162,93 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Save AWG config. [rawText] is the original .conf file content and is stored
-     * separately so the display can show all lines without round-trip loss.
+     * Keep an imported config under [name], replacing one of the same name, and
+     * make it the active one. [rawText] is the original .conf file content and is
+     * stored separately so the display can show all lines without round-trip loss.
      */
-    fun saveAwgConfig(config: AwgConfig, rawText: String) {
+    fun saveAwgConfig(config: AwgConfig, rawText: String, name: String) {
+        setAwgConfs(_awgConfs.value + (name to rawText))
+        activateAwgConfig(config, rawText, name)
+    }
+
+    /** Takes effect at the next connect, like every other change to the tunnel. */
+    fun selectAwgConf(name: String) {
+        val raw = _awgConfs.value[name] ?: return
+        val config = runCatching { parseAwgConf(raw) }
+            .onFailure { AppLogger.w(TAG, "Saved config $name no longer parses: $it") }
+            .getOrNull() ?: return
+        activateAwgConfig(config, raw, name)
+    }
+
+    /** False when [newName] is blank or already taken, which is what the field reports. */
+    fun renameAwgConf(oldName: String, newName: String): Boolean {
+        val name = newName.trim()
+        if (name == oldName) return true
+        if (name.isEmpty() || name in _awgConfs.value) return false
+        val raw = _awgConfs.value[oldName] ?: return false
+        setAwgConfs(_awgConfs.value - oldName + (name to raw))
+        if (_awgConfName.value == oldName) {
+            _awgConfName.value = name
+            prefs.awgConfName = name
+        }
+        if (prefs.awgConfInUse == oldName) {
+            prefs.awgConfInUse = name
+            _awgConfInUse.value = storedConfInUse()
+        }
+        return true
+    }
+
+    /**
+     * Any config but the one the tunnel is running on. Deleting the selected one
+     * selects the first that is left, or leaves the app with no server at all.
+     */
+    fun deleteAwgConf(name: String) {
+        if (name == _awgConfInUse.value) return
+        val rest = _awgConfs.value - name
+        if (name == _awgConfName.value) {
+            rest.keys.sorted().firstOrNull()?.let { selectAwgConf(it) }
+            if (_awgConfName.value == name) clearAwgConfig()
+        }
+        setAwgConfs(rest)
+    }
+
+    private fun clearAwgConfig() {
+        _awgConfig.value = null
+        _rawConfText.value = null
+        _awgConfName.value = null
+        prefs.awgConf = null
+        prefs.awgConfRaw = null
+        prefs.awgConfName = null
+        _serverKey.value = storedServerKey()
+    }
+
+    private fun activateAwgConfig(config: AwgConfig, rawText: String, name: String) {
         _awgConfig.value = config
         _rawConfText.value = rawText
+        _awgConfName.value = name
         prefs.awgConf = config.toConfString()   // what the service is started with
         prefs.awgConfRaw = rawText              // what the Config screen shows
+        prefs.awgConfName = name
+        _serverKey.value = storedServerKey()
+    }
+
+    private fun setAwgConfs(confs: Map<String, String>) {
+        _awgConfs.value = confs
+        prefs.awgConfs = confs
     }
 
     private fun loadSavedConfig() {
         val stored = prefs.awgConf ?: return
-        _awgConfig.value = runCatching { parseAwgConf(stored) }.getOrNull()
-        _rawConfText.value = prefs.awgConfRaw ?: stored
+        val config = runCatching { parseAwgConf(stored) }.getOrNull()
+        _awgConfig.value = config
+        val raw = prefs.awgConfRaw ?: stored
+        _rawConfText.value = raw
+        // A config imported before configs were kept by name becomes the first one.
+        if (_awgConfName.value == null && config != null) {
+            setAwgConfs(_awgConfs.value + (config.endpoint to raw))
+            _awgConfName.value = config.endpoint
+            prefs.awgConfName = config.endpoint
+        }
     }
 
     fun connect() {
@@ -177,12 +280,71 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _isLoadingPeers.value = true
             try {
+                if (!prefs.peersSeeded) seedPeersFromCountry()
                 _countries.value = repo.getCountries(forceRefresh = force)
             } catch (e: Exception) {
                 _errorMessage.value = "Failed to load peers: ${e.message}"
             } finally {
                 _isLoadingPeers.value = false
             }
+        }
+    }
+
+    /**
+     * On the first run, start with the peers of the country the phone is in, so
+     * a new user can connect without learning what a peer is. Runs once: a user
+     * who later removes them all does not want them back.
+     */
+    private suspend fun seedPeersFromCountry() {
+        if (_selectedPeers.value.isEmpty()) {
+            val iso = detectCountryIso()
+            val key = iso?.let { countryKeyForIso(it, repo.getCountries().map { c -> c.countryKey }) }
+            if (key == null) {
+                AppLogger.w(TAG, "No public peers for country $iso")
+            } else {
+                val peers = peersToSelect(repo.getPeersForCountry(key), emptyMap())
+                AppLogger.i(TAG, "First run: ${peers.size} peers from $key")
+                selectPeers(peers.map { it.address })
+            }
+        }
+        prefs.peersSeeded = true
+    }
+
+    /** The network's country, then the SIM's, then the one in the system locale. */
+    private fun detectCountryIso(): String? {
+        val tm = getApplication<Application>().getSystemService(TelephonyManager::class.java)
+        return listOfNotNull(tm?.networkCountryIso, tm?.simCountryIso, Locale.getDefault().country)
+            .firstOrNull { it.isNotBlank() }
+    }
+
+    fun selectPeers(addresses: Collection<String>) {
+        val current = _selectedPeers.value + addresses
+        _selectedPeers.value = current
+        savePeers(current)
+    }
+
+    fun unselectPeers(addresses: Collection<String>) {
+        val current = _selectedPeers.value - addresses.toSet()
+        _selectedPeers.value = current
+        savePeers(current)
+    }
+
+    /**
+     * Connect to each peer from this device. The crawler's verdict comes from its
+     * own network; this one answers whether the peer is reachable from here.
+     */
+    fun probePeers(addresses: List<String>) {
+        if (_isProbing.value) return
+        viewModelScope.launch {
+            _isProbing.value = true
+            val limit = Semaphore(PROBE_PARALLELISM)
+            addresses.map { address ->
+                launch {
+                    val ms = limit.withPermit { probePeer(address) } ?: return@launch
+                    _probeResults.value = _probeResults.value + (address to ms)
+                }
+            }.forEach { it.join() }
+            _isProbing.value = false
         }
     }
 
@@ -341,6 +503,12 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
             YggNetworkState.probeFound.value = YggNetworkState.manager?.probeServer() ?: false
             YggNetworkState.probing.value = false
         }
+    }
+
+    private fun storedConfInUse(): String? {
+        val state = _tunnelStatus.value.overall
+        val tunnelDown = state == VpnState.IDLE || state == VpnState.DISCONNECTED
+        return if (tunnelDown) null else prefs.awgConfInUse
     }
 
     private fun storedServerKey(): String =

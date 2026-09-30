@@ -2,6 +2,8 @@ package net.holowbark.peers
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
@@ -32,7 +34,8 @@ import net.holowbark.BuildConfig
  *
  * On network failure the last saved snapshot is used, and failing that the peer
  * list bundled with the APK, so a first run with no connectivity still offers
- * something to connect through.
+ * something to connect through. Either one is stored unmeasured and stale: its
+ * "up" and latency describe a day long gone, and the next screen should retry.
  */
 class PeerRepository(private val db: PeerDatabase, private val context: Context) {
     companion object {
@@ -42,6 +45,8 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         private const val GITHUB_TREE_URL =
             "https://api.github.com/repos/yggdrasil-network/public-peers/git/trees/master?recursive=1"
         private const val CACHE_TTL_MS = 60 * 60 * 1000L // 1 hour
+        // Offline, every screen would otherwise wait out the timeouts again.
+        private const val RETRY_INTERVAL_MS = 5 * 60 * 1000L
         private const val SNAP_FILE = "peers_snap.json"
     }
 
@@ -61,6 +66,9 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
     // The region layout changes about once a year, so one fetch per process is plenty.
     private var regionMapCache: Map<String, String>? = null
 
+    private val fetchLock = Mutex()
+    private var lastAttemptAt = 0L
+
     suspend fun getCountries(forceRefresh: Boolean = false): List<CountryInfo> {
         ensureCacheFresh(forceRefresh)
         return db.peerDao().getCountrySummaries().map {
@@ -73,22 +81,27 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         return db.peerDao().getByCountry(countryKey)
     }
 
-    private suspend fun ensureCacheFresh(force: Boolean) {
+    private suspend fun ensureCacheFresh(force: Boolean) = fetchLock.withLock {
+        val now = System.currentTimeMillis()
         val latest = db.peerDao().getLatestCacheTime()
-        val stale = latest == null || System.currentTimeMillis() - latest > CACHE_TTL_MS
-        if (force || stale) fetchAndCache()
+        val stale = latest == null || now - latest > CACHE_TTL_MS
+        val empty = latest == null
+        if (force || empty || (stale && now - lastAttemptAt > RETRY_INTERVAL_MS)) {
+            lastAttemptAt = now
+            fetchAndCache()
+        }
     }
 
-    suspend fun fetchAndCache(): Int = withContext(Dispatchers.IO) {
+    private suspend fun fetchAndCache(): Int = withContext(Dispatchers.IO) {
         try {
-            val regionMap = regionMapCache ?: buildRegionMap().also { regionMapCache = it }
+            val regionMap = regionMapCache
+                ?: buildRegionMap().also { if (it.isNotEmpty()) regionMapCache = it }
             AppLogger.d(TAG, "Region map: ${regionMap.size} files")
             val nodesText = fetchUrl(NODES_URL)
             val peers = parsePeerNodes(nodesText, regionMap)
             AppLogger.d(TAG, "Parsed ${peers.size} peers from ${peers.map { it.country }.toSet().size} countries")
             if (peers.isNotEmpty()) {
-                db.peerDao().deleteAll()
-                db.peerDao().insertAll(peers)
+                db.peerDao().replaceAll(peers)
                 saveSnapshot(peers)
             }
             peers.size
@@ -97,19 +110,19 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
             val snap = loadSnapshot()
             if (snap != null) {
                 AppLogger.d(TAG, "Loaded snapshot: ${snap.size} peers")
-                db.peerDao().deleteAll()
-                db.peerDao().insertAll(snap)
+                db.peerDao().replaceAll(snap.unmeasured())
                 snap.size
             } else {
                 AppLogger.w(TAG, "No snapshot available, loading bundled fallback")
                 val fallback = loadFallbackPeers()
                 AppLogger.d(TAG, "Bundled fallback: ${fallback.size} peers")
-                db.peerDao().deleteAll()
-                db.peerDao().insertAll(fallback)
+                db.peerDao().replaceAll(fallback.unmeasured())
                 fallback.size
             }
         }
     }
+
+    private fun List<Peer>.unmeasured() = map { it.copy(up = null, responseMs = null, cachedAt = 0L) }
 
     private fun saveSnapshot(peers: List<Peer>) {
         try {

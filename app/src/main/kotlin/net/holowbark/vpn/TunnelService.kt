@@ -161,6 +161,7 @@ class TunnelService : VpnService() {
             ACTION_STOP        -> { stopVpn(); START_NOT_STICKY }
             ACTION_RESTART_AWG -> { restartAwg(); START_STICKY }
             ACTION_START -> {
+                Prefs.of(this).run { awgConfInUse = awgConfName }
                 val awgConfig = intent.getStringExtra(EXTRA_AWG_CONF)
                     ?.let { runCatching { parseAwgConf(it) }.getOrNull() }
                 startVpn(
