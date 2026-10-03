@@ -55,6 +55,15 @@ so the transport that carries the tunnel does not run through it.
   split routes, which is slower to set up but works the same.
 - The tunnel is only as reachable as the overlay: with no connected Yggdrasil
   peers, nothing connects. Ten or more peers is a reasonable starting point.
+- When the settings name apps, the app checks who owns each new connection.
+  Otherwise an excluded app could bind a socket to `tun0` directly and use the
+  tunnel anyway. While apps are named, ping and traceroute do not work through
+  the tunnel and fragmented UDP packets are lost. The check needs Android 10
+  (API 29); older versions do not have it.
+  An app that binds its own sockets to `tun0` (for example, a torrent client set
+  to "VPN only") loses its TCP connections, because Android does not report
+  their owner. Turn that binding off in the app: its traffic goes through the
+  tunnel anyway.
 
 ## Quick start
 

@@ -22,6 +22,10 @@ class PacketRouter(
     private val dnsProxy: SplitDnsProxy? = null,
     /** Called once the traffic the idle gate waits for arrives; see [armIdleGate]. */
     private val onWake: () -> Unit = {},
+    /** Apps the split names, and the owner lookup that enforces it; see [OwnerFilter]. */
+    appUids: Set<Int> = emptySet(),
+    isAllowList: Boolean = false,
+    ownerLookup: OwnerLookup? = null,
 ) {
     companion object {
         private const val TAG = "PacketRouter"
@@ -30,6 +34,7 @@ class PacketRouter(
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val outStream = FileOutputStream(tunFd.fileDescriptor)
+    private val ownerFilter = ownerLookup?.let { OwnerFilter(appUids, isAllowList, it, ::route) }
 
     /**
      * Bytes apps have sent into the tunnel. A counter, not a timestamp: a phone in
@@ -59,6 +64,7 @@ class PacketRouter(
 
     fun stop() {
         scope.cancel()
+        ownerFilter?.stop()
         AppLogger.i(TAG, "PacketRouter stopped")
     }
 
@@ -99,6 +105,10 @@ class PacketRouter(
             dnsProxy.handleQuery(packet)
             return
         }
+        if (ownerFilter != null) ownerFilter.admit(packet) else route(packet)
+    }
+
+    private fun route(packet: ByteArray) {
         val dst = packet.destinationAddress() ?: return
         if (dst.isYggdrasil()) ygg.writePacket(packet) else awg.writePacket(packet)
     }
@@ -118,8 +128,6 @@ class PacketRouter(
         }
     }.getOrNull()
 }
-
-private const val IPV4_MIN_LEN = 20
 
 /** True for an address in the Yggdrasil overlay range 200::/7. */
 fun InetAddress.isYggdrasil(): Boolean =

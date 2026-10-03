@@ -7,11 +7,13 @@ package net.holowbark.vpn
  */
 
 const val IP_PROTO_ICMP   = 1
+const val IP_PROTO_TCP    = 6
 const val IP_PROTO_UDP    = 17
 const val IP_PROTO_ICMPV6 = 58
 
 const val DNS_PORT = 53
 
+const val IPV4_MIN_LEN    = 20
 const val IPV6_HEADER_LEN = 40
 const val UDP_HEADER_LEN  = 8
 

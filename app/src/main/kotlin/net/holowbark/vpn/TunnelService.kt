@@ -113,6 +113,8 @@ class TunnelService : VpnService() {
     private var ygg: YggdrasilManager? = null
     private var awg: AwgManager? = null
     private var router: PacketRouter? = null
+    /** Uids of the apps the split names, for the router's owner filter. */
+    private var splitUids: Set<Int> = emptySet()
 
     // Manages deferred AWG start (ping wait) + bridge loop; cancelled/restarted on restartAwg()
     private var awgLifecycleScope: CoroutineScope? = null
@@ -280,6 +282,9 @@ class TunnelService : VpnService() {
             awg = awgMgr,
             dnsProxy = dnsProxyInstance,
             onWake = { onActivity("an app wants the tunnel") },
+            appUids = splitUids,
+            isAllowList = Prefs.of(this).appsAllowList,
+            ownerLookup = ownerLookup(),
         )
         ygg = yggMgr
         awg = awgMgr
@@ -420,14 +425,32 @@ class TunnelService : VpnService() {
             return
         }
         val allowList = prefs.appsAllowList
-        val applied = apps.count { pkg ->
+        val applied = apps.filter { pkg ->
             runCatching {
                 if (allowList) builder.addAllowedApplication(pkg)
                 else builder.addDisallowedApplication(pkg)
             }.onFailure { AppLogger.w(TAG, "app split $pkg: $it") }.isSuccess
         }
-        if (allowList) AppLogger.i(TAG, "Apps inside the tunnel: $applied of ${apps.size}")
-        else AppLogger.i(TAG, "Apps outside the tunnel: $applied of ${apps.size}")
+        splitUids = applied.mapNotNull { pkg ->
+            runCatching { packageManager.getPackageUid(pkg, 0) }
+                .onFailure { AppLogger.w(TAG, "uid of $pkg: $it") }.getOrNull()
+        }.toSet()
+        if (allowList) AppLogger.i(TAG, "Apps inside the tunnel: ${applied.size} of ${apps.size}")
+        else AppLogger.i(TAG, "Apps outside the tunnel: ${applied.size} of ${apps.size}")
+    }
+
+    /**
+     * The owner lookup that keeps split-out apps from binding to the TUN. Only
+     * needed when the split names apps, and only possible from API 29.
+     */
+    private fun ownerLookup(): OwnerLookup? {
+        if (splitUids.isEmpty()) return null
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            AppLogger.w(TAG, "No owner lookup below API 29 — split-out apps can bind to the TUN")
+            return null
+        }
+        val cm = getSystemService(ConnectivityManager::class.java)
+        return { protocol, local, remote -> cm.getConnectionOwnerUid(protocol, local, remote) }
     }
 
     private fun Builder.addRouteOrWarn(route: Route) {
@@ -782,6 +805,7 @@ class TunnelService : VpnService() {
         releaseResources()
         router?.stop(); awg?.stop(); ygg?.stop(); tunFd?.close()
         router = null; awg = null; ygg = null; tunFd = null
+        splitUids = emptySet()
         lastNotifText = ""
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
