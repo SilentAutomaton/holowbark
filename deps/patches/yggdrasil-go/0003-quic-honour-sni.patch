@@ -1,0 +1,128 @@
+Honour the SNI option on QUIC links
+
+linkQUIC.dial cloned the TLS config and set ServerName on the clone, then passed
+the original l.tlsconfig to quic.DialAddr, so the clone was never used. The
+sni= option (linkOptions.tlsSNI) was not read at all: a quic:// peer sent no
+server name, because quic-go falls back to the dialled IP literal and crypto/tls
+leaves an IP out of the ClientHello.
+
+  dial passes the clone to DialAddr, as linkTLS does
+  ServerName is the peer's host name, or sni= when given
+  the MinVersion/MaxVersion lines on the clone are gone: they were dead code,
+  and once the clone is used TLS 1.2 would undercut the base config (TLS 1.3)
+
+link_quic_test.go reads the server name that a local QUIC listener receives.
+
+diff --git a/src/core/link_quic.go b/src/core/link_quic.go
+index ffe7a2c..99ffdb3 100644
+--- a/src/core/link_quic.go
++++ b/src/core/link_quic.go
+@@ -54,10 +54,11 @@ func (l *linkQUIC) dial(ctx context.Context, url *url.URL, info linkInfo, option
+ 	tlsconfig := l.tlsconfig.Clone()
+ 	return l.findSuitableIP(url, func(hostname string, ip net.IP, port int) (net.Conn, error) {
+ 		tlsconfig.ServerName = hostname
+-		tlsconfig.MinVersion = tls.VersionTLS12
+-		tlsconfig.MaxVersion = tls.VersionTLS13
++		if sni := options.tlsSNI; sni != "" {
++			tlsconfig.ServerName = sni
++		}
+ 		hostport := net.JoinHostPort(ip.String(), fmt.Sprintf("%d", port))
+-		qc, err := quic.DialAddr(ctx, hostport, l.tlsconfig, l.quicconfig)
++		qc, err := quic.DialAddr(ctx, hostport, tlsconfig, l.quicconfig)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+diff --git a/src/core/link_quic_test.go b/src/core/link_quic_test.go
+new file mode 100644
+index 0000000..12de6e0
+--- /dev/null
++++ b/src/core/link_quic_test.go
+@@ -0,0 +1,88 @@
++package core
++
++import (
++	"context"
++	"crypto/tls"
++	"net"
++	"net/url"
++	"testing"
++	"time"
++
++	"github.com/quic-go/quic-go"
++	"github.com/yggdrasil-network/yggdrasil-go/src/config"
++)
++
++// dialQUICServerName dials a local QUIC listener through linkQUIC.dial and
++// returns the SNI that the listener saw in the ClientHello.
++func dialQUICServerName(t *testing.T, host string, options linkOptions) string {
++	t.Helper()
++
++	cfg := config.GenerateConfig()
++	require_NoError(t, cfg.GenerateSelfSignedCertificate())
++	core, err := New(cfg.Certificate, GetLoggerWithPrefix("", false))
++	require_NoError(t, err)
++	defer core.Stop()
++
++	seen := make(chan string, 1)
++	listener, err := quic.ListenAddr(":0", &tls.Config{
++		Certificates: []tls.Certificate{*cfg.Certificate},
++		MinVersion:   tls.VersionTLS13,
++		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
++			seen <- hello.ServerName
++			return nil, nil
++		},
++	}, &quic.Config{})
++	require_NoError(t, err)
++	defer listener.Close()
++
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	go func() {
++		if conn, err := listener.Accept(ctx); err == nil {
++			defer conn.CloseWithError(0, "")
++			<-ctx.Done()
++		}
++	}()
++
++	u, err := url.Parse("quic://" + host + ":" + portOf(listener.Addr().String()))
++	require_NoError(t, err)
++	// The first QUIC handshake of a process can exceed the 5 s handshake
++	// timeout on a loaded host, so a failed dial is retried.
++	var conn net.Conn
++	for attempt := 0; attempt < 3; attempt++ {
++		if conn, err = core.links.quic.dial(ctx, u, linkInfo{}, options); err == nil {
++			break
++		}
++	}
++	require_NoError(t, err)
++	defer conn.Close()
++
++	select {
++	case name := <-seen:
++		return name
++	case <-ctx.Done():
++		t.Fatal("listener saw no ClientHello")
++		return ""
++	}
++}
++
++func portOf(addr string) string {
++	for i := len(addr) - 1; i >= 0; i-- {
++		if addr[i] == ':' {
++			return addr[i+1:]
++		}
++	}
++	return addr
++}
++
++func TestLinkQUIC_SNIFromOption(t *testing.T) {
++	require_Equal(t, dialQUICServerName(t, "127.0.0.1", linkOptions{tlsSNI: "example.org"}), "example.org")
++}
++
++func TestLinkQUIC_SNIFromHostname(t *testing.T) {
++	require_Equal(t, dialQUICServerName(t, "localhost", linkOptions{}), "localhost")
++}
++
++func TestLinkQUIC_NoSNIForIPLiteral(t *testing.T) {
++	require_Equal(t, dialQUICServerName(t, "127.0.0.1", linkOptions{}), "")
++}
