@@ -74,10 +74,11 @@ class VpnTileService : TileService() {
     private fun startVpnOrOpenApp() {
         val prefs = Prefs.of(this)
         val awgConf = prefs.awgConf
-        val peers = prefs.selectedPeers.toList()
+        val peers = prefs.dialedPeers().toList()
         val needsPermission = VpnService.prepare(this) != null
 
-        if (needsPermission || awgConf == null || peers.isEmpty()) {
+        // A search fills an empty list when the tunnel starts.
+        if (needsPermission || awgConf == null || (peers.isEmpty() && !prefs.autoPeerSearch)) {
             AppLogger.d(TAG, "Tile: opening app " +
                 "(permission=$needsPermission conf=${awgConf != null} peers=${peers.size})")
             openApp()

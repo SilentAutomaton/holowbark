@@ -1,6 +1,7 @@
 package net.holowbark.vpn
 
 import kotlinx.coroutines.*
+import mobile.Protector
 import mobile.Yggdrasil
 import net.holowbark.AppLogger
 import org.json.JSONArray
@@ -15,6 +16,8 @@ class YggdrasilManager(
     private val onStatusChange: (state: LayerState, address: String, peerCount: Int) -> Unit = { _, _, _ -> },
     /** Called once the server's overlay key becomes known, so it can be kept. */
     private val onServerKeyLearned: (String) -> Unit = {},
+    /** Keeps a peer socket out of the tunnel it carries. It reports whether it could. */
+    private val protect: (fd: Int) -> Boolean = { true },
 ) {
     companion object {
         private const val TAG = "YggdrasilManager"
@@ -54,6 +57,16 @@ class YggdrasilManager(
 
         val cfg = buildConfig(peers, privateKey, multicastPassword)
         val inst = Yggdrasil()
+        inst.setProtector(object : Protector {
+            // Always true: the system refuses the socket while no tunnel exists, as it
+            // does for the first peers, dialled before the TUN is built. They are kept
+            // out of the tunnel by its routes, and refusing them would leave the
+            // overlay with no peers at all.
+            override fun protect(fd: Long): Boolean {
+                if (!this@YggdrasilManager.protect(fd.toInt())) AppLogger.d(TAG, "socket $fd not protected")
+                return true
+            }
+        })
         try {
             inst.startJSON(cfg.toString().toByteArray())
             ygg = inst
@@ -82,8 +95,30 @@ class YggdrasilManager(
         AppLogger.i(TAG, "Yggdrasil stopped")
     }
 
+    /** Dial one more peer on the running node; it is redialled like the others. */
+    fun addPeer(uri: String) {
+        val inst = ygg ?: return
+        try {
+            inst.addPeer(uri)
+            AppLogger.d(TAG, "added peer $uri")
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "addPeer $uri: $e")
+        }
+    }
+
+    /** Stop dialling a peer and drop its link. */
+    fun removePeer(uri: String) {
+        val inst = ygg ?: return
+        try {
+            inst.removePeer(uri)
+            AppLogger.d(TAG, "removed peer $uri")
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "removePeer $uri: $e")
+        }
+    }
+
     /** Ask Yggdrasil to redial its configured peers now, without waiting for its
-     *  own backoff. The peer list itself is fixed at [start]. */
+     *  own backoff. The peers it dials are those given at [start] and [addPeer]. */
     fun retryPeers() {
         ygg?.retryPeersNow()
         AppLogger.d(TAG, "retryPeersNow")

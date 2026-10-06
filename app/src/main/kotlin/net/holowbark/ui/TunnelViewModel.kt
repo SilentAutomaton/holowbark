@@ -5,13 +5,15 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -24,6 +26,8 @@ import net.holowbark.config.parseAwgConf
 import net.holowbark.config.toConfString
 import net.holowbark.peers.PeerDatabase
 import net.holowbark.peers.PeerRepository
+import net.holowbark.peers.PeerSelection
+import net.holowbark.peers.detectCountryIso
 import net.holowbark.peers.models.CountryInfo
 import net.holowbark.peers.models.countryKeyForIso
 import net.holowbark.peers.models.peersToSelect
@@ -39,7 +43,6 @@ import net.holowbark.vpn.TunnelService
 import net.holowbark.vpn.parseIpv6Bytes
 import net.holowbark.vpn.parseSubnet
 import java.net.Inet6Address
-import java.util.Locale
 
 private const val TAG = "TunnelViewModel"
 private const val RESTART_TEARDOWN_TIMEOUT_MS = 3_000L
@@ -75,8 +78,15 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     private val _countries = MutableStateFlow<List<CountryInfo>>(emptyList())
     val countries: StateFlow<List<CountryInfo>> = _countries.asStateFlow()
 
-    private val _selectedPeers = MutableStateFlow<Set<String>>(emptySet())
-    val selectedPeers: StateFlow<Set<String>> = _selectedPeers.asStateFlow()
+    private val _selection = MutableStateFlow(PeerSelection())
+    val selection: StateFlow<PeerSelection> = _selection.asStateFlow()
+
+    /** Every peer the tunnel will dial, whoever chose it. */
+    val selectedPeers: StateFlow<Set<String>> =
+        _selection.map { it.all }.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    private val _autoPeerSearch = MutableStateFlow(prefs.autoPeerSearch)
+    val autoPeerSearch: StateFlow<Boolean> = _autoPeerSearch.asStateFlow()
 
     /** Connect time from this device per peer address, -1 for no answer. */
     private val _probeResults = MutableStateFlow<Map<String, Int>>(emptyMap())
@@ -137,6 +147,8 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
         override fun onReceive(context: Context, intent: Intent) {
             val status = TunnelStatus.fromIntent(intent) ?: return
             _tunnelStatus.value = status
+            // The service rewrites the derived peers when a search finishes.
+            _selection.value = _selection.value.copy(derived = prefs.derivedPeers)
             _awgConfInUse.value = storedConfInUse()
             // The key is learned while connecting, and this is the only signal the
             // UI gets that the tunnel made progress.
@@ -255,7 +267,7 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
         val app = getApplication<Application>()
         ContextCompat.startForegroundService(app, TunnelService.startIntent(
             context = app,
-            peers   = _selectedPeers.value.toList(),
+            peers   = _selection.value.all.toList(),
             awgConf = _awgConfig.value?.toConfString(),
             yggKey  = prefs.yggPrivateKey(),
             multicastPassword = prefs.activeMulticastPassword(),
@@ -296,38 +308,46 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
      * who later removes them all does not want them back.
      */
     private suspend fun seedPeersFromCountry() {
-        if (_selectedPeers.value.isEmpty()) {
-            val iso = detectCountryIso()
-            val key = iso?.let { countryKeyForIso(it, repo.getCountries().map { c -> c.countryKey }) }
-            if (key == null) {
-                AppLogger.w(TAG, "No public peers for country $iso")
-            } else {
-                val peers = peersToSelect(repo.getPeersForCountry(key), emptyMap())
-                AppLogger.i(TAG, "First run: ${peers.size} peers from $key")
-                selectPeers(peers.map { it.address })
-            }
+        if (_selection.value.all.isEmpty() && !_autoPeerSearch.value) {
+            val peers = countryPeers()
+            AppLogger.i(TAG, "First run: ${peers.size} peers from the country")
+            setSelection(_selection.value.withDerived(peers))
         }
         prefs.peersSeeded = true
     }
 
-    /** The network's country, then the SIM's, then the one in the system locale. */
-    private fun detectCountryIso(): String? {
-        val tm = getApplication<Application>().getSystemService(TelephonyManager::class.java)
-        return listOfNotNull(tm?.networkCountryIso, tm?.simCountryIso, Locale.getDefault().country)
-            .firstOrNull { it.isNotBlank() }
+    /** The peers of the country the phone is in, as the first run picks them. */
+    private suspend fun countryPeers(): List<String> {
+        val iso = detectCountryIso(getApplication())
+        val key = iso?.let { countryKeyForIso(it, repo.getCountries().map { c -> c.countryKey }) }
+        if (key == null) {
+            AppLogger.w(TAG, "No public peers for country $iso")
+            return emptyList()
+        }
+        return peersToSelect(repo.getPeersForCountry(key), emptyMap()).map { it.address }
     }
 
-    fun selectPeers(addresses: Collection<String>) {
-        val current = _selectedPeers.value + addresses
-        _selectedPeers.value = current
-        savePeers(current)
+    /**
+     * Switching on empties the app's own choice, so the search fills it at the next
+     * connect. Switching off puts back what a first launch would pick. Peers the
+     * user added stay either way.
+     */
+    fun setAutoPeerSearch(enabled: Boolean) {
+        if (enabled == _autoPeerSearch.value) return
+        _autoPeerSearch.value = enabled
+        prefs.autoPeerSearch = enabled
+        viewModelScope.launch {
+            val derived = if (enabled) emptyList() else countryPeers()
+            setSelection(_selection.value.withDerived(derived))
+            applySelectedPeers()
+        }
     }
 
-    fun unselectPeers(addresses: Collection<String>) {
-        val current = _selectedPeers.value - addresses.toSet()
-        _selectedPeers.value = current
-        savePeers(current)
-    }
+    fun selectPeers(addresses: Collection<String>) =
+        setSelection(_selection.value.withManual(addresses))
+
+    fun unselectPeers(addresses: Collection<String>) =
+        setSelection(_selection.value.without(addresses))
 
     /**
      * Connect to each peer from this device. The crawler's verdict comes from its
@@ -349,10 +369,11 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun togglePeer(address: String) {
-        val current = _selectedPeers.value.toMutableSet()
-        if (address in current) current.remove(address) else current.add(address)
-        _selectedPeers.value = current
-        savePeers(current)
+        val current = _selection.value
+        setSelection(
+            if (address in current.all) current.without(listOf(address))
+            else current.withManual(listOf(address))
+        )
     }
 
     /**
@@ -364,7 +385,7 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
             return (it as PeerUriException).error
         }
         val canonical = uri.toString()
-        if (canonical !in _selectedPeers.value) togglePeer(canonical)
+        if (canonical !in _selection.value.manual) selectPeers(listOf(canonical))
         return null
     }
 
@@ -385,13 +406,7 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun removePeer(address: String) {
-        val current = _selectedPeers.value.toMutableSet()
-        if (current.remove(address)) {
-            _selectedPeers.value = current
-            savePeers(current)
-        }
-    }
+    fun removePeer(address: String) = unselectPeers(listOf(address))
 
     fun clearError() { _errorMessage.value = null }
 
@@ -514,9 +529,15 @@ class TunnelViewModel(app: Application) : AndroidViewModel(app) {
     private fun storedServerKey(): String =
         _awgConfig.value?.endpoint?.let { prefs.serverKey(it) }.orEmpty()
 
-    private fun savePeers(peers: Set<String>) { prefs.selectedPeers = peers }
+    /** Writes only the half that changed: the service owns the other while it searches. */
+    private fun setSelection(selection: PeerSelection) {
+        val old = _selection.value
+        _selection.value = selection
+        if (selection.manual != old.manual) prefs.manualPeers = selection.manual
+        if (selection.derived != old.derived) prefs.derivedPeers = selection.derived
+    }
 
     private fun loadSavedPeers() {
-        _selectedPeers.value = prefs.selectedPeers
+        _selection.value = PeerSelection(prefs.manualPeers, prefs.derivedPeers)
     }
 }

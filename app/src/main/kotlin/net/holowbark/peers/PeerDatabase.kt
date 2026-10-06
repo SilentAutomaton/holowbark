@@ -8,6 +8,9 @@ interface PeerDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(peers: List<Peer>)
 
+    @Query("SELECT * FROM peers")
+    suspend fun getAll(): List<Peer>
+
     @Query("SELECT * FROM peers WHERE country = :countryKey ORDER BY responseMs ASC")
     suspend fun getByCountry(countryKey: String): List<Peer>
 

@@ -1,0 +1,218 @@
+Let the host protect every outbound peer socket
+
+A VPN app on Android builds a tunnel that carries its own peer links, so a link
+that is dialled while the tunnel is up goes into the tunnel unless the socket is
+exempted first (VpnService.protect). Excluding the peer's address from the routes
+works only for the peers known when the interface is built.
+
+  core.SocketProtector   called with the descriptor of each outbound socket
+                         before it connects; a refusal aborts the dial
+  linkTCP.dialerFor      wraps its Control, which covers tcp, tls, ws, wss and
+                         socks: they all dial through it
+  linkQUIC.dial          quic.DialAddr opens a socket that nothing can reach, so
+                         the socket is made here with a ListenConfig and handed
+                         to quic.Dial; it is closed when the connection ends,
+                         because a transport does not close a socket it was given
+
+link_protect_test.go calls each transport with a counting protector, and with
+one that refuses.
+
+diff --git a/src/core/link_protect_test.go b/src/core/link_protect_test.go
+new file mode 100644
+index 0000000..4c62212
+--- /dev/null
++++ b/src/core/link_protect_test.go
+@@ -0,0 +1,104 @@
++package core
++
++import (
++	"context"
++	"crypto/tls"
++	"net"
++	"net/url"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/quic-go/quic-go"
++	"github.com/yggdrasil-network/yggdrasil-go/src/config"
++)
++
++func setProtector(t *testing.T, protect func(fd uintptr) bool) {
++	t.Helper()
++	SocketProtector = protect
++	t.Cleanup(func() { SocketProtector = nil })
++}
++
++func newTestCore(t *testing.T) (*Core, *config.NodeConfig) {
++	t.Helper()
++	cfg := config.GenerateConfig()
++	require_NoError(t, cfg.GenerateSelfSignedCertificate())
++	core, err := New(cfg.Certificate, GetLoggerWithPrefix("", false))
++	require_NoError(t, err)
++	t.Cleanup(core.Stop)
++	return core, cfg
++}
++
++func dialTCP(t *testing.T, core *Core) error {
++	t.Helper()
++	listener, err := net.Listen("tcp", "127.0.0.1:0")
++	require_NoError(t, err)
++	defer listener.Close()
++	u, err := url.Parse("tcp://" + listener.Addr().String())
++	require_NoError(t, err)
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	conn, err := core.links.tcp.dial(ctx, u, linkInfo{}, linkOptions{})
++	if err == nil {
++		conn.Close()
++	}
++	return err
++}
++
++func dialQUIC(t *testing.T, core *Core, cfg *config.NodeConfig) error {
++	t.Helper()
++	listener, err := quic.ListenAddr("127.0.0.1:0", &tls.Config{
++		Certificates: []tls.Certificate{*cfg.Certificate},
++		MinVersion:   tls.VersionTLS13,
++	}, &quic.Config{})
++	require_NoError(t, err)
++	defer listener.Close()
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	go func() {
++		if conn, err := listener.Accept(ctx); err == nil {
++			defer conn.CloseWithError(0, "")
++			<-ctx.Done()
++		}
++	}()
++	u, err := url.Parse("quic://" + listener.Addr().String())
++	require_NoError(t, err)
++	// The first QUIC handshake of a process can exceed the 5 s handshake timeout
++	// on a loaded host, so a failed dial is retried.
++	var conn net.Conn
++	for attempt := 0; attempt < 3; attempt++ {
++		if conn, err = core.links.quic.dial(ctx, u, linkInfo{}, linkOptions{}); err == nil {
++			conn.Close()
++			return nil
++		}
++	}
++	return err
++}
++
++func TestSocketProtector_TCPDialCallsItOnce(t *testing.T) {
++	var calls atomic.Int32
++	setProtector(t, func(uintptr) bool { calls.Add(1); return true })
++	core, _ := newTestCore(t)
++	require_NoError(t, dialTCP(t, core))
++	require_Equal(t, calls.Load(), int32(1))
++}
++
++func TestSocketProtector_QUICDialCallsItOnce(t *testing.T) {
++	var calls atomic.Int32
++	setProtector(t, func(uintptr) bool { calls.Add(1); return true })
++	core, cfg := newTestCore(t)
++	require_NoError(t, dialQUIC(t, core, cfg))
++	require_Equal(t, calls.Load(), int32(1))
++}
++
++func TestSocketProtector_RefusalFailsTheTCPDial(t *testing.T) {
++	setProtector(t, func(uintptr) bool { return false })
++	core, _ := newTestCore(t)
++	require_True(t, dialTCP(t, core) != nil)
++}
++
++func TestSocketProtector_RefusalFailsTheQUICDial(t *testing.T) {
++	setProtector(t, func(uintptr) bool { return false })
++	core, cfg := newTestCore(t)
++	require_True(t, dialQUIC(t, core, cfg) != nil)
++}
+diff --git a/src/core/link_quic.go b/src/core/link_quic.go
+index 99ffdb3..f2480b8 100644
+--- a/src/core/link_quic.go
++++ b/src/core/link_quic.go
+@@ -57,11 +57,25 @@ func (l *linkQUIC) dial(ctx context.Context, url *url.URL, info linkInfo, option
+ 		if sni := options.tlsSNI; sni != "" {
+ 			tlsconfig.ServerName = sni
+ 		}
+-		hostport := net.JoinHostPort(ip.String(), fmt.Sprintf("%d", port))
+-		qc, err := quic.DialAddr(ctx, hostport, tlsconfig, l.quicconfig)
++		udpAddr := &net.UDPAddr{IP: ip, Port: port}
++		// quic.DialAddr opens its own socket, out of reach of the protector, so the
++		// socket is made here and handed over. The wildcard address is dual-stack,
++		// as the one DialAddr listens on.
++		lc := net.ListenConfig{Control: protectControl(nil)}
++		pc, err := lc.ListenPacket(ctx, "udp", ":0")
+ 		if err != nil {
+ 			return nil, err
+ 		}
++		qc, err := quic.Dial(ctx, pc, udpAddr, tlsconfig, l.quicconfig)
++		if err != nil {
++			pc.Close()
++			return nil, err
++		}
++		go func() {
++			// The transport does not close a socket it was handed.
++			<-qc.Context().Done()
++			pc.Close()
++		}()
+ 		qs, err := qc.OpenStreamSync(ctx)
+ 		if err != nil {
+ 			return nil, err
+diff --git a/src/core/link_tcp.go b/src/core/link_tcp.go
+index 7cbb1ba..87a1854 100644
+--- a/src/core/link_tcp.go
++++ b/src/core/link_tcp.go
+@@ -63,10 +63,10 @@ func (l *linkTCP) dialerFor(dst *net.TCPAddr, sintf string) (*net.Dialer, error)
+ 	dialer := &net.Dialer{
+ 		Timeout:   time.Second * 5,
+ 		KeepAlive: -1,
+-		Control:   l.tcpContext,
++		Control:   protectControl(l.tcpContext),
+ 	}
+ 	if sintf != "" {
+-		dialer.Control = l.getControl(sintf)
++		dialer.Control = protectControl(l.getControl(sintf))
+ 		ief, err := net.InterfaceByName(sintf)
+ 		if err != nil {
+ 			// On mobile platforms (Android/iOS), InterfaceByName may fail due to
+diff --git a/src/core/protect.go b/src/core/protect.go
+new file mode 100644
+index 0000000..d0da1dc
+--- /dev/null
++++ b/src/core/protect.go
+@@ -0,0 +1,34 @@
++package core
++
++import (
++	"errors"
++	"syscall"
++)
++
++// SocketProtector, when set, is called with the descriptor of every outbound
++// socket before it connects. On Android it keeps the socket out of a VPN whose
++// tunnel the peer link itself carries. Set it before a node starts.
++var SocketProtector func(fd uintptr) bool
++
++var errSocketProtect = errors.New("the socket protector refused the descriptor")
++
++// protectControl wraps a net.Dialer or net.ListenConfig Control function. A
++// refused socket aborts the dial: connecting it anyway would send the link into
++// the tunnel it is meant to carry.
++func protectControl(next func(network, address string, c syscall.RawConn) error) func(network, address string, c syscall.RawConn) error {
++	return func(network, address string, c syscall.RawConn) error {
++		if protect := SocketProtector; protect != nil {
++			var ok bool
++			if err := c.Control(func(fd uintptr) { ok = protect(fd) }); err != nil {
++				return err
++			}
++			if !ok {
++				return errSocketProtect
++			}
++		}
++		if next == nil {
++			return nil
++		}
++		return next(network, address, c)
++	}
++}

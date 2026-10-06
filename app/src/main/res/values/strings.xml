@@ -88,6 +88,15 @@
     <string name="peer_discovered">Found on this network</string>
     <string name="peer_latency">%1$s ms</string>
     <string name="peer_uptime">up %1$s</string>
+    <string name="peers_auto_title">Find peers automatically</string>
+    <string name="peers_auto_subtitle">Tries the public peers each time you connect and keeps the ones that answer. Peers you add yourself stay.</string>
+    <string name="peers_auto_empty">Peers are found when you connect.</string>
+    <string name="peer_auto">Chosen automatically</string>
+    <string name="settings_peers_auto">Automatic</string>
+    <string name="settings_peers_auto_count">Automatic · %1$d selected</string>
+    <string name="connect_searching">Searching for peers…</string>
+    <string name="connect_peers_auto">Finds peers when you connect</string>
+    <string name="connect_no_peer_answered">No peer answered</string>
     <string name="discovery_header">Local discovery</string>
     <string name="discovery_title">Find my devices nearby</string>
     <string name="discovery_subtitle">Finds your own devices on this Wi-Fi, with no internet. Every device needs the same passphrase.</string>

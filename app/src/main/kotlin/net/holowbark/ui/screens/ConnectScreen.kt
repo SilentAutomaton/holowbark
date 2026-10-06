@@ -50,6 +50,7 @@ fun ConnectScreen(
     val status by vm.tunnelStatus.collectAsState()
     val awgConfig by vm.awgConfig.collectAsState()
     val selectedPeers by vm.selectedPeers.collectAsState()
+    val autoPeerSearch by vm.autoPeerSearch.collectAsState()
     val error by vm.errorMessage.collectAsState()
     val livePeers by YggNetworkState.peers.collectAsState()
 
@@ -77,6 +78,7 @@ fun ConnectScreen(
         status = status,
         hasConfig = hasConfig,
         peerCount = selectedPeers.size,
+        autoPeerSearch = autoPeerSearch,
         stallDetail = if (stalled) stallDetail(selectedPeers.size, livePeers) else null,
     )
 
@@ -324,6 +326,7 @@ private fun statusLabels(
     status: TunnelStatus,
     hasConfig: Boolean,
     peerCount: Int,
+    autoPeerSearch: Boolean,
     stallDetail: String?,
 ): StatusLabels {
     if (!hasConfig) {
@@ -344,6 +347,7 @@ private fun statusLabels(
             action = "Cancel",
             state = "Connecting",
             detail = when {
+                status.searching -> stringResource(R.string.connect_searching)
                 status.ygg == LayerState.UP -> "Reaching server…"
                 stallDetail != null -> stallDetail
                 else -> "Finding peers…"
@@ -353,6 +357,8 @@ private fun statusLabels(
             action = "Retry",
             state = "Error",
             detail = when {
+                status.ygg == LayerState.ERROR && autoPeerSearch && peerCount == 0 ->
+                    stringResource(R.string.connect_no_peer_answered)
                 status.ygg == LayerState.ERROR -> "The overlay could not start"
                 status.awg == LayerState.ERROR -> "The server did not answer"
                 else -> "See Logs in Settings"
@@ -362,7 +368,11 @@ private fun statusLabels(
         else -> StatusLabels(
             action = "Connect",
             state = "Disconnected",
-            detail = if (peerCount > 0) "$peerCount peers selected" else "No peers selected",
+            detail = when {
+                peerCount > 0 -> "$peerCount peers selected"
+                autoPeerSearch -> stringResource(R.string.connect_peers_auto)
+                else -> "No peers selected"
+            },
         )
     }
 }

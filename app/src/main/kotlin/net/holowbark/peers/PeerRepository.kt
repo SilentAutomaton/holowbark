@@ -81,6 +81,15 @@ class PeerRepository(private val db: PeerDatabase, private val context: Context)
         return db.peerDao().getByCountry(countryKey)
     }
 
+    /**
+     * Every known peer, without a word to the network: under a whitelist the fetch
+     * would wait out its timeouts before the search could start. The table, then
+     * the last snapshot, then the list bundled with the APK.
+     */
+    suspend fun cachedPeers(): List<Peer> = withContext(Dispatchers.IO) {
+        db.peerDao().getAll().ifEmpty { (loadSnapshot() ?: loadFallbackPeers()).unmeasured() }
+    }
+
     private suspend fun ensureCacheFresh(force: Boolean) = fetchLock.withLock {
         val now = System.currentTimeMillis()
         val latest = db.peerDao().getLatestCacheTime()

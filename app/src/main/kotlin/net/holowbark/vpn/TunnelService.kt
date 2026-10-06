@@ -18,6 +18,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -26,15 +27,32 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.holowbark.AppLogger
 import net.holowbark.MainActivity
 import net.holowbark.R
 import net.holowbark.HolowbarkApp
 import net.holowbark.config.AwgConfig
 import net.holowbark.config.parseAwgConf
+import net.holowbark.peers.DISCOVERY_MAX_PEERS
+import net.holowbark.peers.DeadPeerClock
+import net.holowbark.peers.PEER_WATCH_TICK_MS
+import net.holowbark.peers.DISCOVERY_WANT
+import net.holowbark.peers.PeerDatabase
+import net.holowbark.peers.PeerRepository
+import net.holowbark.peers.answeringPeers
+import net.holowbark.peers.detectCountryIso
+import net.holowbark.peers.discoveryCandidates
+import net.holowbark.peers.hostOf
+import net.holowbark.peers.models.Peer
+import net.holowbark.peers.models.countryKeyForIso
+import net.holowbark.peers.probePeer
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
@@ -44,6 +62,9 @@ class TunnelService : VpnService() {
         private const val TAG = "TunnelService"
         private const val NOTIF_ID = 1
         private const val PEER_DNS_TIMEOUT_SECONDS = 3L
+        /** Shorter than the manual check: under a whitelist most peers never answer,
+         *  and the search waits out every one it has not finished with. */
+        private const val SEARCH_PROBE_TIMEOUT_MS = 2_000
 
         private const val WATCHDOG_INTERVAL_MS = 60_000L
         private const val WATCHDOG_INTERVAL_IDLE_MS = 240_000L
@@ -125,11 +146,18 @@ class TunnelService : VpnService() {
     private var savedAwgServerPort: Int = 44555
 
     // What the overlay was started with, so recovery can start it the same way.
-    private var savedPeers: List<String> = emptyList()
+    @Volatile private var savedPeers: List<String> = emptyList()
     private var savedYggKey: String = ""
     private var savedMulticast: String = ""
 
     private var watchdogScope: CoroutineScope? = null
+
+    /** Owns the peer search that runs before the tunnel is built; null otherwise. */
+    private var searchScope: CoroutineScope? = null
+
+    /** Owns the search that tops the running node up and looks again when it goes quiet. */
+    private var peerWatchScope: CoroutineScope? = null
+    private val peerClock = DeadPeerClock()
 
     /** Owns the idle countdown and the wake probe, which outlive neither the tunnel
      *  nor each other. */
@@ -163,15 +191,25 @@ class TunnelService : VpnService() {
             ACTION_STOP        -> { stopVpn(); START_NOT_STICKY }
             ACTION_RESTART_AWG -> { restartAwg(); START_STICKY }
             ACTION_START -> {
-                Prefs.of(this).run { awgConfInUse = awgConfName }
+                val prefs = Prefs.of(this)
+                prefs.run { awgConfInUse = awgConfName }
                 val awgConfig = intent.getStringExtra(EXTRA_AWG_CONF)
                     ?.let { runCatching { parseAwgConf(it) }.getOrNull() }
-                startVpn(
-                    awgConfig = awgConfig,
-                    peers     = intent.getStringArrayListExtra(EXTRA_YGG_PEERS).orEmpty(),
-                    yggKey    = intent.getStringExtra(EXTRA_YGG_KEY).orEmpty(),
-                    multicastPassword = intent.getStringExtra(EXTRA_MULTICAST_PASSWORD).orEmpty(),
-                )
+                val yggKey = intent.getStringExtra(EXTRA_YGG_KEY).orEmpty()
+                val multicastPassword = intent.getStringExtra(EXTRA_MULTICAST_PASSWORD).orEmpty()
+                // The search owns the derived peers, so the peers in the intent are
+                // not read: the tile and the app would otherwise each bring a list
+                // that is already stale.
+                if (prefs.autoPeerSearch) {
+                    searchThenStart(awgConfig, prefs.manualPeers, yggKey, multicastPassword)
+                } else {
+                    startVpn(
+                        awgConfig = awgConfig,
+                        peers     = intent.getStringArrayListExtra(EXTRA_YGG_PEERS).orEmpty(),
+                        yggKey    = yggKey,
+                        multicastPassword = multicastPassword,
+                    )
+                }
                 START_STICKY
             }
             // Granting VPN consent makes the system start this service on its
@@ -191,6 +229,139 @@ class TunnelService : VpnService() {
     }
 
     // VPN start / stop
+
+    /**
+     * Probes from this process only work while no tunnel exists: once it does, the
+     * sockets would go into the TUN, and a peer's address is excluded from its
+     * routes only when the TUN is built. So the search runs first, and the tunnel
+     * starts with what it found.
+     */
+    private fun searchThenStart(
+        awgConfig: AwgConfig?,
+        manual: Set<String>,
+        yggKey: String,
+        multicastPassword: String,
+    ) {
+        if (searchScope != null || tunFd != null) {
+            AppLogger.w(TAG, "VPN already starting — ignoring duplicate start")
+            return
+        }
+        updateStatus { copy(overall = VpnState.CONNECTING, ygg = LayerState.STARTING, searching = true) }
+        // The search can outlast the 5 s that startForegroundService() allows.
+        startForeground(NOTIF_ID, buildNotification(status))
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        searchScope = scope
+        scope.launch {
+            val prefs = Prefs.of(this@TunnelService)
+            val found = findPeers(prefs.derivedPeers)
+            withContext(Dispatchers.Main) {
+                if (searchScope !== scope) return@withContext
+                searchScope = null
+                prefs.derivedPeers = found.toSet()
+                updateStatus { copy(searching = false) }
+                val peers = (manual + found).toList()
+                if (peers.isEmpty()) {
+                    AppLogger.e(TAG, "No peer answered the search")
+                    updateStatus { copy(ygg = LayerState.ERROR) }
+                } else {
+                    startVpn(awgConfig, peers, yggKey, multicastPassword)
+                    if (tunFd != null) watchPeers()
+                }
+            }
+        }
+    }
+
+    private suspend fun findPeers(previous: Set<String>): List<String> {
+        val (all, home) = peerPool()
+        val found = answeringPeers(discoveryCandidates(all, home, previous)) { probeOutsideTunnel(it) }
+            .take(DISCOVERY_WANT)
+            .toList()
+        AppLogger.i(TAG, "Peer search: ${found.size} of ${all.size} known peers answered")
+        return found
+    }
+
+    /**
+     * Keep the node supplied with peers while the tunnel runs: top it up once after
+     * the start, then look again from scratch whenever no peer has been up for a
+     * long time with nothing to explain it. The probes and the new links are
+     * protected, so they leave by the physical network instead of riding the
+     * tunnel they would join.
+     *
+     * A plain [delay] ticks the clock: it holds no wakelock and sets no alarm, so a
+     * sleeping phone does not run it, which is the right trade for a repair that
+     * matters only when somebody is using the phone.
+     */
+    private fun watchPeers() {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        peerWatchScope = scope
+        scope.launch {
+            searchPass(reset = false)
+            while (isActive) {
+                delay(PEER_WATCH_TICK_MS)
+                val anyPeerUp = YggNetworkState.peers.value.any { it.up }
+                if (peerClock.tick(anyPeerUp, peerWatchEligible(), SystemClock.elapsedRealtime())) {
+                    AppLogger.i(TAG, "No peer up for a while with no reason to wait: searching again")
+                    searchPass(reset = true)
+                }
+            }
+        }
+    }
+
+    /** False when something explains the silence: no network, a dark screen, power saving. */
+    private fun peerWatchEligible(): Boolean {
+        val power = getSystemService(PowerManager::class.java)
+        return physicalNetworks.isNotEmpty() && screenOn && !idle &&
+            power?.isPowerSaveMode != true && power?.isDeviceIdleMode != true
+    }
+
+    /**
+     * One pass of the search over the running node. A top-up keeps the peers it has
+     * and adds more. A reset forgets them, adds the ones that answer, and drops the
+     * old ones that did not, so a network where they are all dead ends up with a
+     * node that dials only live peers. Peers the user chose are never touched.
+     */
+    private suspend fun searchPass(reset: Boolean) {
+        val mgr = ygg ?: return
+        val prefs = Prefs.of(this)
+        val manual = prefs.manualPeers
+        val old = prefs.derivedPeers
+        val kept = if (reset) emptySet() else old
+        val limit = DISCOVERY_MAX_PEERS - kept.size
+        if (limit <= 0) return
+        if (reset) updateStatus { copy(searching = true) }
+        try {
+            val (all, home) = peerPool()
+            val derived = kept.toMutableSet()
+            val skipHosts = (manual + kept).map(::hostOf).toSet()
+            answeringPeers(discoveryCandidates(all, home, kept), skipHosts) { probeOutsideTunnel(it) }
+                .take(limit)
+                .collect { uri ->
+                    // A peer the node already dials needs no second call.
+                    if (uri !in old) mgr.addPeer(uri)
+                    derived += uri
+                    prefs.derivedPeers = derived.toSet()
+                    savedPeers = (manual + old + derived).toList()
+                    broadcastStatus()
+                }
+            if (reset) (old - derived).forEach { mgr.removePeer(it) }
+            // Recovery restarts the overlay from this list.
+            savedPeers = (manual + derived).toList()
+            AppLogger.i(TAG, "Peer search ${if (reset) "again" else "top-up"}: ${derived.size} derived peers")
+        } finally {
+            if (reset) updateStatus { copy(searching = false) }
+        }
+    }
+
+    /** Every known peer, and the key of the phone's country among them. */
+    private suspend fun peerPool(): Pair<List<Peer>, String?> {
+        val all = PeerRepository(PeerDatabase.getInstance(this), this).cachedPeers()
+        val home = detectCountryIso(this)
+            ?.let { countryKeyForIso(it, all.map { peer -> peer.country }.distinct()) }
+        return all to home
+    }
+
+    private suspend fun probeOutsideTunnel(address: String): Int? =
+        probePeer(address, SEARCH_PROBE_TIMEOUT_MS) { socket -> protect(socket) }
 
     private fun startVpn(
         awgConfig: AwgConfig?,
@@ -233,6 +404,7 @@ class TunnelService : VpnService() {
             onStatusChange = { state -> updateStatus { copy(awg = state) } },
         )
         val yggMgr = YggdrasilManager(
+            protect = { fd -> protect(fd) },
             onPacketOut = { router?.writeToTun(it) },
             onWGPacket = if (serverAddr != null) awgMgr::sendWGPacket else null,
             onStatusChange = { state, addr, count ->
@@ -532,6 +704,8 @@ class TunnelService : VpnService() {
                 physicalNetworks.add(network)
                 AppLogger.i(TAG, "Physical network available — retrying Ygg peers")
                 consecutiveFailures = 0
+                // A new network is a new situation for every peer: they redial first.
+                peerClock.reset()
                 ygg?.retryPeers()
                 onActivity("a network came back")
             }
@@ -654,6 +828,7 @@ class TunnelService : VpnService() {
      * cost of the repair is latency, not a failed request.
      */
     private fun onActivity(reason: String) {
+        peerClock.reset()
         if (screenOn) {
             idleJob?.cancel()
             idleJob = null
@@ -788,7 +963,11 @@ class TunnelService : VpnService() {
     private fun stopVpn() {
         // stopSelf() below re-enters here through onDestroy(); the guard makes the
         // second pass a no-op.
-        if (!isRunning && tunFd == null) return
+        val wasSearching = searchScope != null
+        searchScope?.cancel(); searchScope = null
+        peerWatchScope?.cancel(); peerWatchScope = null
+        peerClock.reset()
+        if (!isRunning && tunFd == null && !wasSearching) return
         AppLogger.i(TAG, "stopVpn")
         isRunning = false
         YggNetworkState.manager = null

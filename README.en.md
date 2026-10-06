@@ -79,6 +79,23 @@ so the transport that carries the tunnel does not run through it.
    own: your Yggdrasil node, or one on your LAN.
 3. Go back and press **Connect**.
 
+**Settings → Peers → Find peers automatically** replaces the country's peers with
+a search. Each time you connect, before the tunnel is built, the app tries the
+public peers it already has (the saved list, or the one built into the app, so no
+download is needed), starting with the country the phone is in, and starts the
+tunnel with the first three that answer from different hosts. Once the tunnel is
+up the search goes on in the background, outside the tunnel, and dials every peer
+that answers, up to 20, one pass per connect. The peers it kept come first the
+next time. If no peer is up for two minutes with nothing to explain it (the phone
+has a network, the screen is on, and neither Battery Saver nor Doze is active), the
+app searches again from scratch: it dials the peers that answer and drops the old
+ones that do not, without restarting the tunnel. A network change gives the old
+peers a fresh two minutes first. After a repeat that brings nobody up, the pause
+before the next one doubles, up to 30 minutes. It only tries peers that open a plain TCP connection (`tcp`, `tls`,
+`ws`, `wss`); `quic` peers are skipped. Peers you type in or tick yourself stay
+in both modes. Switching the search off puts back the peers of your country, as on
+the first run.
+
 The public list reports peers as its crawler sees them, from its own network. The
 button next to **Add all** checks every peer of a country from the phone itself;
 then **Add all** takes the peers that answered here. The check runs only while you
@@ -285,6 +302,9 @@ Neither are the Go sources. `make deps` fetches them at the revisions pinned in 
 |---|---|
 | `yggdrasil-go/0001-…` | exports `SendToKey`, `KeyForAddress` and `ProbeNode` to the bindings, so the tunnel can address the server by its key instead of waiting for the address-to-key lookup |
 | `yggdrasil-go/0002-…` | pins the dependencies that `contrib/awgmobile` and gomobile need |
+| `yggdrasil-go/0003-…` | the QUIC link passes a server name to TLS: the peer's host name, or `sni=` when given; `sni=` was ignored on `quic://` before |
+| `yggdrasil-go/0004-…` | every outbound peer socket (`tcp`, `tls`, `ws`, `wss`, `socks`, `quic`) passes through a host callback before it connects, so a link dialled while the tunnel is up can be kept out of it |
+| `yggdrasil-go/0005-…` | the bindings gain `AddPeer` and `RemovePeer`, to change the peers of the running node, and `SetProtector`, the host side of the callback above |
 | `anet/0001-…` | drops a `//go:linkname` pull of Go's private IPv6 zone caches |
 
 Each patch opens with why it exists. The one machine-specific line — the `replace`
@@ -297,7 +317,7 @@ compile inside that module.
 `.deps/` is a build artefact. `make deps` resets its tracked files to the pinned
 revision before applying the patches, so an edit made there is gone on the next
 build — it belongs in a patch. To add one: edit the checkout, capture it with
-`git -C .deps/yggdrasil-go diff > deps/patches/yggdrasil-go/0003-….patch`, and the
+`git -C .deps/yggdrasil-go diff -- <files> > deps/patches/yggdrasil-go/0004-….patch`, and the
 next `make aar` picks it up. `make deps-reset` throws the checkouts away and fetches
 them again.
 

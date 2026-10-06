@@ -39,6 +39,9 @@ class Prefs(private val prefs: SharedPreferences) {
         private const val BYPASS_SUBNETS   = "bypass_subnets"
         private const val AWG_CONF_RAW     = "awg_conf_raw"
         private const val SELECTED_PEERS   = "selected_peers"
+        private const val MANUAL_PEERS     = "manual_peers"
+        private const val DERIVED_PEERS    = "derived_peers"
+        private const val AUTO_PEER_SEARCH = "auto_peer_search"
         private const val PEERS_SEEDED     = "peers_seeded"
         private const val AWG_CONFS        = "awg_confs"
         private const val AWG_CONF_NAME    = "awg_conf_name"
@@ -46,6 +49,19 @@ class Prefs(private val prefs: SharedPreferences) {
 
         fun of(context: Context): Prefs =
             Prefs(context.getSharedPreferences(FILE, Context.MODE_PRIVATE))
+    }
+
+    init {
+        // Before the split into manual and derived peers every selection was one set,
+        // and nothing in it says who chose what. Treating it all as derived is the
+        // choice that keeps the peers working; the user's own picks are lost only
+        // when they first switch the search on.
+        if (prefs.contains(SELECTED_PEERS)) {
+            prefs.edit()
+                .putStringSet(DERIVED_PEERS, prefs.getStringSet(SELECTED_PEERS, null) ?: emptySet())
+                .remove(SELECTED_PEERS)
+                .apply()
+        }
     }
 
     fun vpnState(): VpnState = prefs.enum(VPN_STATE, VpnState.IDLE)
@@ -116,9 +132,23 @@ class Prefs(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean(PEERS_SEEDED, false)
         set(v) = prefs.edit().putBoolean(PEERS_SEEDED, v).apply()
 
-    var selectedPeers: Set<String>
-        get() = prefs.getStringSet(SELECTED_PEERS, null) ?: emptySet()
-        set(v) = prefs.edit().putStringSet(SELECTED_PEERS, v).apply()
+    /** Peers the user typed or ticked. They stay in every mode. */
+    var manualPeers: Set<String>
+        get() = prefs.getStringSet(MANUAL_PEERS, null) ?: emptySet()
+        set(v) = prefs.edit().putStringSet(MANUAL_PEERS, v).apply()
+
+    /** Peers the app chose: from the user's country, or found by the search. */
+    var derivedPeers: Set<String>
+        get() = prefs.getStringSet(DERIVED_PEERS, null) ?: emptySet()
+        set(v) = prefs.edit().putStringSet(DERIVED_PEERS, v).apply()
+
+    /** What a start without a search dials. */
+    fun dialedPeers(): Set<String> = manualPeers + derivedPeers
+
+    /** Look for peers that answer on every connect, instead of using the country's. */
+    var autoPeerSearch: Boolean
+        get() = prefs.getBoolean(AUTO_PEER_SEARCH, false)
+        set(v) = prefs.edit().putBoolean(AUTO_PEER_SEARCH, v).apply()
 
     var yggDnsEnabled: Boolean
         get() = prefs.getBoolean(YGG_DNS_ENABLED, false)

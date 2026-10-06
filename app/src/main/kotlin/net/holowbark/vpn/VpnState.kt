@@ -18,6 +18,7 @@ data class TunnelStatus(
     val yggAddress: String = "",
     val yggPeers: Int      = 0,
     val awg: LayerState    = LayerState.IDLE,
+    val searching: Boolean = false,
 ) {
     fun putInto(intent: Intent): Intent = intent
         .putExtra(EXTRA_OVERALL,     overall.name)
@@ -25,6 +26,7 @@ data class TunnelStatus(
         .putExtra(EXTRA_YGG_ADDRESS, yggAddress)
         .putExtra(EXTRA_YGG_PEERS,   yggPeers)
         .putExtra(EXTRA_AWG,         awg.name)
+        .putExtra(EXTRA_SEARCHING,   searching)
 
     companion object {
         private const val EXTRA_OVERALL     = "overall"
@@ -32,6 +34,7 @@ data class TunnelStatus(
         private const val EXTRA_YGG_ADDRESS = "ygg_address"
         private const val EXTRA_YGG_PEERS   = "ygg_peer_count"
         private const val EXTRA_AWG         = "awg_state"
+        private const val EXTRA_SEARCHING   = "searching_peers"
 
         /** Null when the intent carries no readable overall state. */
         fun fromIntent(intent: Intent): TunnelStatus? {
@@ -42,6 +45,7 @@ data class TunnelStatus(
                 yggAddress = intent.getStringExtra(EXTRA_YGG_ADDRESS).orEmpty(),
                 yggPeers   = intent.getIntExtra(EXTRA_YGG_PEERS, 0),
                 awg        = intent.enum<LayerState>(EXTRA_AWG) ?: LayerState.IDLE,
+                searching  = intent.getBooleanExtra(EXTRA_SEARCHING, false),
             )
         }
     }

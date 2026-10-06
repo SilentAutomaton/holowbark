@@ -37,6 +37,7 @@ fun SettingsScreen(
 ) {
     val awgConfig by vm.awgConfig.collectAsState()
     val selectedPeers by vm.selectedPeers.collectAsState()
+    val autoPeerSearch by vm.autoPeerSearch.collectAsState()
     val oled by vm.oledTheme.collectAsState()
     val yggDns by vm.yggDnsEnabled.collectAsState()
     val bypassedApps by vm.bypassedApps.collectAsState()
@@ -68,8 +69,12 @@ fun SettingsScreen(
             SettingsRow(
                 icon = Icons.Default.Hub,
                 title = "Peers",
-                subtitle = if (selectedPeers.isEmpty()) "None selected"
-                           else "${selectedPeers.size} selected",
+                subtitle = when {
+                    autoPeerSearch && selectedPeers.isEmpty() -> stringResource(R.string.settings_peers_auto)
+                    autoPeerSearch -> stringResource(R.string.settings_peers_auto_count, selectedPeers.size)
+                    selectedPeers.isEmpty() -> "None selected"
+                    else -> "${selectedPeers.size} selected"
+                },
                 onClick = onOpenPeers,
             )
             SettingsRow(

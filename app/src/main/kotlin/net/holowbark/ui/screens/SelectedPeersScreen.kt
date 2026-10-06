@@ -47,6 +47,8 @@ fun SelectedPeersScreen(
     onBack: () -> Unit,
 ) {
     val selected by vm.selectedPeers.collectAsState()
+    val selection by vm.selection.collectAsState()
+    val autoPeerSearch by vm.autoPeerSearch.collectAsState()
     val live by YggNetworkState.peers.collectAsState()
     val selfAddr by YggNetworkState.selfAddress.collectAsState()
     val tunnelState by vm.tunnelStatus.collectAsState()
@@ -105,6 +107,17 @@ fun SelectedPeersScreen(
         val showHint = tunnelState.overall != VpnState.DISCONNECTED &&
             tunnelState.overall != VpnState.IDLE
 
+        val searchSection: LazyListScope.() -> Unit = {
+            item {
+                SwitchRow(
+                    title = stringResource(R.string.peers_auto_title),
+                    subtitle = stringResource(R.string.peers_auto_subtitle),
+                    checked = autoPeerSearch,
+                    onToggle = { vm.setAutoPeerSearch(!autoPeerSearch) },
+                )
+            }
+        }
+
         val addSection: LazyListScope.() -> Unit = {
             item {
                 OutlinedTextField(
@@ -142,13 +155,19 @@ fun SelectedPeersScreen(
         val peerSection: LazyListScope.() -> Unit = {
             item { SectionHeader(stringResource(R.string.peers_selected_header)) }
             if (sorted.isEmpty()) {
-                item { Hint("No peers yet. Without at least one, the overlay cannot connect.") }
+                item {
+                    Hint(
+                        if (autoPeerSearch) stringResource(R.string.peers_auto_empty)
+                        else "No peers yet. Without at least one, the overlay cannot connect."
+                    )
+                }
             } else {
                 items(sorted, key = { it }) { uri ->
                     PeerRow(
                         uri = uri,
                         live = matched[uri],
                         running = running,
+                        auto = uri in selection.derived,
                         onRemove = { vm.removePeer(uri) },
                     )
                 }
@@ -156,7 +175,7 @@ fun SelectedPeersScreen(
             if (others.isNotEmpty()) {
                 item { SectionHeader(stringResource(R.string.peers_other_header)) }
                 items(others, key = { "live_" + it.uri }) { peer ->
-                    PeerRow(uri = peer.uri, live = peer, running = running, onRemove = null)
+                    PeerRow(uri = peer.uri, live = peer, running = running, auto = false, onRemove = null)
                 }
             }
         }
@@ -193,6 +212,7 @@ fun SelectedPeersScreen(
                 // instead of starting under the field and the discovery settings.
                 Row(Modifier.fillMaxSize()) {
                     LazyColumn(Modifier.weight(1f).fillMaxHeight()) {
+                        searchSection()
                         addSection()
                         discoverySection()
                     }
@@ -202,6 +222,7 @@ fun SelectedPeersScreen(
             } else {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                     LazyColumn(Modifier.contentWidth()) {
+                        searchSection()
                         addSection()
                         peerSection()
                         item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
@@ -227,6 +248,7 @@ private fun PeerRow(
     uri: String,
     live: YggNetworkState.PeerInfo?,
     running: Boolean,
+    auto: Boolean,
     onRemove: (() -> Unit)?,
 ) {
     Row(
@@ -240,6 +262,14 @@ private fun PeerRow(
                 fontFamily = FontFamily.Monospace,
                 style = MaterialTheme.typography.bodySmall,
             )
+            if (auto) {
+                Text(
+                    text = stringResource(R.string.peer_auto),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
             if (running) PeerState(live, origin = if (onRemove == null) live?.let { originLabel(it) } else null)
         }
         if (onRemove != null) {

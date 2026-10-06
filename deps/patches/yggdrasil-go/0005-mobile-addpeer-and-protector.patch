@@ -1,0 +1,251 @@
+Expose AddPeer, RemovePeer and a socket protector to the mobile bindings
+
+The mobile wrapper takes its peers from the config at start and has no way to
+change them while the node runs, though Core.AddPeer and Core.RemovePeer do
+exactly that. A host that finds better peers after the tunnel is up, or whose
+peers have all gone dead, needs both, and a way to keep a new link out of the
+tunnel (see core.SocketProtector).
+
+  mobile.AddPeer(uri)       dials a peer on the running node and keeps redialling
+                            it, like an entry of Peers in the config
+  mobile.RemovePeer(uri)    closes the link and stops redialling; a peer that is
+                            not configured is an error
+  mobile.Protector          implemented by the host; Protect(fd) is
+                            VpnService.protect on Android
+  mobile.SetProtector(p)    routes every outbound peer socket through p; call it
+                            before StartJSON
+
+The tests start two nodes on loopback, with multicast off so that only the peer
+under test can link them: AddPeer brings a link up, RemovePeer takes it down for
+good, and a peer dial asks the protector about its socket.
+
+diff --git a/contrib/mobile/mobile.go b/contrib/mobile/mobile.go
+index 9ce73a0..9f3455e 100644
+--- a/contrib/mobile/mobile.go
++++ b/contrib/mobile/mobile.go
+@@ -4,7 +4,9 @@ import (
+ 	"crypto/ed25519"
+ 	"encoding/hex"
+ 	"encoding/json"
++	"errors"
+ 	"net"
++	"net/url"
+ 	"regexp"
+ 	"time"
+ 
+@@ -261,6 +263,49 @@ func (m *Yggdrasil) Stop() error {
+ 	return nil
+ }
+ 
++// Protector is implemented by the host to keep a socket out of a VPN. On Android
++// Protect is VpnService.protect: without it, a peer link dialled while the tunnel
++// is up would run through the tunnel it carries.
++type Protector interface {
++	Protect(fd int) bool
++}
++
++// SetProtector makes every outbound peer socket pass through p before it
++// connects, and a socket p refuses is not connected. Call it before StartJSON.
++func (m *Yggdrasil) SetProtector(p Protector) {
++	if p == nil {
++		core.SocketProtector = nil
++		return
++	}
++	core.SocketProtector = func(fd uintptr) bool { return p.Protect(int(fd)) }
++}
++
++// AddPeer dials a peer on a running node and redials it when the link drops, as
++// an entry of Peers in the config does. uri is the peer URI, e.g. tls://host:443.
++func (m *Yggdrasil) AddPeer(uri string) error {
++	if m.core == nil {
++		return errors.New("the node is not running")
++	}
++	u, err := url.Parse(uri)
++	if err != nil {
++		return err
++	}
++	return m.core.AddPeer(u, "")
++}
++
++// RemovePeer closes the link to a peer and stops redialling it. uri is the form
++// AddPeer or the config took. A peer that is not configured is an error.
++func (m *Yggdrasil) RemovePeer(uri string) error {
++	if m.core == nil {
++		return errors.New("the node is not running")
++	}
++	u, err := url.Parse(uri)
++	if err != nil {
++		return err
++	}
++	return m.core.RemovePeer(u, "")
++}
++
+ // Retry resets the peer connection timer and tries to dial them immediately.
+ func (m *Yggdrasil) RetryPeersNow() {
+ 	m.core.RetryPeersNow()
+diff --git a/contrib/mobile/mobile_test.go b/contrib/mobile/mobile_test.go
+index 7468929..3db0e9f 100644
+--- a/contrib/mobile/mobile_test.go
++++ b/contrib/mobile/mobile_test.go
+@@ -1,8 +1,13 @@
+ package mobile
+ 
+ import (
++	"encoding/json"
++	"fmt"
++	"net"
+ 	"os"
++	"sync/atomic"
+ 	"testing"
++	"time"
+ 
+ 	"github.com/gologme/log"
+ )
+@@ -26,3 +31,147 @@ func TestStartYggdrasil(t *testing.T) {
+ 		t.Fatalf("Failed to stop Yggdrasil: %s", err)
+ 	}
+ }
++
++func freeTCPPort(t *testing.T) int {
++	t.Helper()
++	l, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer l.Close()
++	return l.Addr().(*net.TCPAddr).Port
++}
++
++func peerIsUp(t *testing.T, y *Yggdrasil) bool {
++	t.Helper()
++	var peers []struct{ Up bool }
++	if err := json.Unmarshal([]byte(y.GetPeersJSON()), &peers); err != nil {
++		t.Fatal(err)
++	}
++	for _, p := range peers {
++		if p.Up {
++			return true
++		}
++	}
++	return false
++}
++
++func TestAddPeer_DialsAPeerOnARunningNode(t *testing.T) {
++	port := freeTCPPort(t)
++	server := &Yggdrasil{}
++	if err := server.StartJSON([]byte(fmt.Sprintf(`{"Listen":["tcp://127.0.0.1:%d"],"MulticastInterfaces":[]}`, port))); err != nil {
++		t.Fatal(err)
++	}
++	defer server.Stop()
++	client := &Yggdrasil{}
++	if err := client.StartJSON([]byte(`{"MulticastInterfaces":[]}`)); err != nil {
++		t.Fatal(err)
++	}
++	defer client.Stop()
++
++	if err := client.AddPeer(fmt.Sprintf("tcp://127.0.0.1:%d", port)); err != nil {
++		t.Fatal(err)
++	}
++	deadline := time.Now().Add(10 * time.Second)
++	for !peerIsUp(t, client) {
++		if time.Now().After(deadline) {
++			t.Fatal("the added peer did not come up")
++		}
++		time.Sleep(100 * time.Millisecond)
++	}
++}
++
++func TestAddPeer_NodeNotStarted_ReturnsAnError(t *testing.T) {
++	if err := (&Yggdrasil{}).AddPeer("tcp://127.0.0.1:1"); err == nil {
++		t.Fatal("expected an error")
++	}
++}
++
++type countingProtector struct{ calls atomic.Int32 }
++
++func (p *countingProtector) Protect(int) bool { p.calls.Add(1); return true }
++
++func TestSetProtector_PeerDialAsksItToProtectTheSocket(t *testing.T) {
++	port := freeTCPPort(t)
++	server := &Yggdrasil{}
++	if err := server.StartJSON([]byte(fmt.Sprintf(`{"Listen":["tcp://127.0.0.1:%d"],"MulticastInterfaces":[]}`, port))); err != nil {
++		t.Fatal(err)
++	}
++	defer server.Stop()
++	protector := &countingProtector{}
++	client := &Yggdrasil{}
++	client.SetProtector(protector)
++	defer client.SetProtector(nil)
++	if err := client.StartJSON([]byte(fmt.Sprintf(`{"Peers":["tcp://127.0.0.1:%d"],"MulticastInterfaces":[]}`, port))); err != nil {
++		t.Fatal(err)
++	}
++	defer client.Stop()
++
++	deadline := time.Now().Add(10 * time.Second)
++	for !peerIsUp(t, client) {
++		if time.Now().After(deadline) {
++			t.Fatal("the peer did not come up")
++		}
++		time.Sleep(100 * time.Millisecond)
++	}
++	if protector.calls.Load() == 0 {
++		t.Fatal("the protector was never asked")
++	}
++}
++
++func TestRemovePeer_ClosesTheLinkAndStopsRedialling(t *testing.T) {
++	port := freeTCPPort(t)
++	server := &Yggdrasil{}
++	if err := server.StartJSON([]byte(fmt.Sprintf(`{"Listen":["tcp://127.0.0.1:%d"],"MulticastInterfaces":[]}`, port))); err != nil {
++		t.Fatal(err)
++	}
++	defer server.Stop()
++	client := &Yggdrasil{}
++	if err := client.StartJSON([]byte(`{"MulticastInterfaces":[]}`)); err != nil {
++		t.Fatal(err)
++	}
++	defer client.Stop()
++	uri := fmt.Sprintf("tcp://127.0.0.1:%d", port)
++	if err := client.AddPeer(uri); err != nil {
++		t.Fatal(err)
++	}
++	waitPeer(t, client, true)
++
++	if err := client.RemovePeer(uri); err != nil {
++		t.Fatal(err)
++	}
++	waitPeer(t, client, false)
++	// A configured peer is redialled after about a second; a removed one is not.
++	time.Sleep(2500 * time.Millisecond)
++	if peerIsUp(t, client) {
++		t.Fatal("the removed peer was dialled again")
++	}
++}
++
++func TestRemovePeer_UnknownPeer_ReturnsAnError(t *testing.T) {
++	client := &Yggdrasil{}
++	if err := client.StartJSON([]byte(`{"MulticastInterfaces":[]}`)); err != nil {
++		t.Fatal(err)
++	}
++	defer client.Stop()
++	if err := client.RemovePeer("tcp://127.0.0.1:1"); err == nil {
++		t.Fatal("expected an error")
++	}
++}
++
++func TestRemovePeer_NodeNotStarted_ReturnsAnError(t *testing.T) {
++	if err := (&Yggdrasil{}).RemovePeer("tcp://127.0.0.1:1"); err == nil {
++		t.Fatal("expected an error")
++	}
++}
++
++func waitPeer(t *testing.T, y *Yggdrasil, up bool) {
++	t.Helper()
++	deadline := time.Now().Add(10 * time.Second)
++	for peerIsUp(t, y) != up {
++		if time.Now().After(deadline) {
++			t.Fatalf("the peer did not become up=%v", up)
++		}
++		time.Sleep(100 * time.Millisecond)
++	}
++}
